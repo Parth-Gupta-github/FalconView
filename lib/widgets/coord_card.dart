@@ -7,6 +7,7 @@ class CoordCard extends StatelessWidget {
   final String? distanceBearingText;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final VoidCallback? onDoubleTap;
 
   const CoordCard({
     super.key,
@@ -14,6 +15,7 @@ class CoordCard extends StatelessWidget {
     required this.onTap,
     required this.onLongPress,
     this.distanceBearingText,
+    this.onDoubleTap,
   });
 
   @override
@@ -24,6 +26,7 @@ class CoordCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         onLongPress: onLongPress,
+        onDoubleTap: onDoubleTap,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(

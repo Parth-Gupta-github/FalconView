@@ -89,6 +89,8 @@ class _MapScreenState extends State<MapScreen> {
   Timer? _toastTimer;
 
   final GlobalKey _actionPanelKey = GlobalKey();
+  final GlobalKey _topOverlayKey = GlobalKey();
+  final GlobalKey _rightFabKey = GlobalKey();
 
   void _onMapCreated(MapLibreMapController controller) {
     _controller = controller;
@@ -130,7 +132,9 @@ class _MapScreenState extends State<MapScreen> {
         child: Material(
           color: Colors.transparent,
           child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: mq.size.width * 0.7),
+            constraints: BoxConstraints(
+              maxWidth: mq.size.width * 0.55 < 300 ? mq.size.width * 0.55 : 300,
+            ),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
@@ -224,28 +228,22 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _selectedPlace = result);
     unawaited(_refreshGpsForBearing());
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Flew to ${result.name}')),
-    );
+    _showTopToast('Flew to ${result.name}');
   }
 
   void _onCoordCardTap() {
     if (_selectedPlace != null) {
       setState(() => _selectedPlace = null);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Long-press to change format')),
-      );
+      _showTopToast('Long-press or double-tap to change format');
     }
   }
 
-  void _onCoordCardLongPress() {
+  void _cycleCoordFormat() {
     final CoordinateFormat next = _coordFormat.next();
     setState(() => _coordFormat = next);
     _saveCoordFormat(next);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Format: ${next.label}')),
-    );
+    _showTopToast('Format: ${next.label}');
   }
 
   Future<void> _onModeToggled(MapMode tapped) async {
@@ -378,11 +376,28 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   bool _isOverActionPanel(Point<double> screenPoint) {
-    final RenderObject? ro = _actionPanelKey.currentContext?.findRenderObject();
-    if (ro is! RenderBox) return false;
-    final Offset topLeft = ro.localToGlobal(Offset.zero);
-    final Rect rect = topLeft & ro.size;
-    return rect.contains(Offset(screenPoint.x, screenPoint.y));
+    final Offset p = Offset(screenPoint.x, screenPoint.y);
+    return _rectFor(_actionPanelKey)?.contains(p) == true ||
+        _rectFor(_topOverlayKey)?.contains(p) == true ||
+        _rectFor(_rightFabKey)?.contains(p) == true;
+  }
+
+  Rect? _rectFor(GlobalKey key) {
+    final RenderObject? ro = key.currentContext?.findRenderObject();
+    if (ro is! RenderBox) return null;
+    return ro.localToGlobal(Offset.zero) & ro.size;
+  }
+
+  Widget _absorbMapGestures({required Key key, required Widget child}) {
+    return GestureDetector(
+      key: key,
+      behavior: HitTestBehavior.opaque,
+      onDoubleTap: () {},
+      onScaleStart: (_) {},
+      onScaleUpdate: (_) {},
+      onScaleEnd: (_) {},
+      child: child,
+    );
   }
 
   Future<void> _addMark(LatLng at) async {
@@ -633,24 +648,28 @@ class _MapScreenState extends State<MapScreen> {
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SearchCard(onTap: _openSearch),
-                  const SizedBox(height: 10),
-                  Align(
-                    alignment: Alignment.topLeft,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 260),
-                      child: CoordCard(
-                        coordsText: _formatCoords(_mapCenter),
-                        distanceBearingText: _distanceBearingLine(),
-                        onTap: _onCoordCardTap,
-                        onLongPress: _onCoordCardLongPress,
+              child: _absorbMapGestures(
+                key: _topOverlayKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SearchCard(onTap: _openSearch),
+                    const SizedBox(height: 10),
+                    Align(
+                      alignment: Alignment.topLeft,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 260),
+                        child: CoordCard(
+                          coordsText: _formatCoords(_mapCenter),
+                          distanceBearingText: _distanceBearingLine(),
+                          onTap: _onCoordCardTap,
+                          onLongPress: _cycleCoordFormat,
+                          onDoubleTap: _cycleCoordFormat,
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -658,17 +677,20 @@ class _MapScreenState extends State<MapScreen> {
             right: 16,
             bottom: 96,
             child: SafeArea(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CompassFab(bearing: _bearing, onTap: _onResetBearing),
-                  const SizedBox(height: 10),
-                  FloatingActionButton(
-                    heroTag: 'gps-fab',
-                    onPressed: _onRecenter,
-                    child: const Icon(Icons.my_location),
-                  ),
-                ],
+              child: _absorbMapGestures(
+                key: _rightFabKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CompassFab(bearing: _bearing, onTap: _onResetBearing),
+                    const SizedBox(height: 10),
+                    FloatingActionButton(
+                      heroTag: 'gps-fab',
+                      onPressed: _onRecenter,
+                      child: const Icon(Icons.my_location),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -678,7 +700,7 @@ class _MapScreenState extends State<MapScreen> {
             bottom: 16,
             child: SafeArea(
               top: false,
-              child: KeyedSubtree(
+              child: _absorbMapGestures(
                 key: _actionPanelKey,
                 child: ActionPanel(
                   mode: _mode,
