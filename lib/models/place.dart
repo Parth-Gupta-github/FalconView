@@ -10,6 +10,7 @@ class Place {
   final LatLng center;
   final LatLngBounds bbox;
   PlaceDownloadState state;
+  final int? regionId;
 
   Place({
     required this.name,
@@ -17,5 +18,38 @@ class Place {
     required this.center,
     required this.bbox,
     this.state = PlaceDownloadState.none,
+    this.regionId,
   });
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'subtitle': subtitle,
+    'centerLat': center.latitude,
+    'centerLng': center.longitude,
+    'south': bbox.southwest.latitude,
+    'west': bbox.southwest.longitude,
+    'north': bbox.northeast.latitude,
+    'east': bbox.northeast.longitude,
+  };
+
+  factory Place.fromJson(Map<String, dynamic> json, {int? regionId}) {
+    final double south = (json['south'] as num).toDouble();
+    final double west = (json['west'] as num).toDouble();
+    final double north = (json['north'] as num).toDouble();
+    final double east = (json['east'] as num).toDouble();
+    return Place(
+      name: json['name'] as String,
+      subtitle: json['subtitle'] as String,
+      center: LatLng(
+        (json['centerLat'] as num).toDouble(),
+        (json['centerLng'] as num).toDouble(),
+      ),
+      bbox: LatLngBounds(
+        southwest: LatLng(south, west),
+        northeast: LatLng(north, east),
+      ),
+      state: PlaceDownloadState.downloaded,
+      regionId: regionId,
+    );
+  }
 }
