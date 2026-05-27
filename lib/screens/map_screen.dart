@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../models/place.dart';
+import '../services/location_service.dart';
 import '../widgets/action_panel.dart';
 import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
@@ -21,6 +23,7 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   MapLibreMapController? _controller;
+  final LocationService _locationService = LocationService();
 
   LatLng _mapCenter = _kInitialCenter;
   double _bearing = 0;
@@ -114,10 +117,24 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _onRecenter() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Recenter on GPS (geolocator wires in chunk 2)')),
-    );
+  Future<void> _onRecenter() async {
+    try {
+      final Position pos = await _locationService.currentPosition();
+      if (!mounted) return;
+      await _controller?.animateCamera(
+        CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 16),
+      );
+    } on LocationDenied catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not get location: $e')),
+      );
+    }
   }
 
   @override
@@ -135,7 +152,9 @@ class _MapScreenState extends State<MapScreen> {
             onMapCreated: _onMapCreated,
             trackCameraPosition: true,
             compassEnabled: false,
-            myLocationEnabled: false,
+            myLocationEnabled: true,
+            myLocationRenderMode: MyLocationRenderMode.normal,
+            myLocationTrackingMode: MyLocationTrackingMode.none,
             rotateGesturesEnabled: true,
             tiltGesturesEnabled: true,
           ),

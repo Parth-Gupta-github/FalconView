@@ -35,6 +35,26 @@
   <!-- MapLibre GL JS — required by maplibre_gl on the web platform -->
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+
+  <!-- Hide MapLibre GL JS default controls on web; we render our own FABs.
+       Keep attribution visible (required by OSM/OpenFreeMap) but shrink and
+       lift it so it doesn't sit under the bottom action panel. -->
+  <style>
+    .maplibregl-ctrl-geolocate,
+    .maplibregl-ctrl-zoom-in,
+    .maplibregl-ctrl-zoom-out,
+    .maplibregl-ctrl-compass {
+      display: none !important;
+    }
+    .maplibregl-ctrl-bottom-right,
+    .maplibregl-ctrl-bottom-left {
+      bottom: 80px !important;
+    }
+    .maplibregl-ctrl-attrib {
+      font-size: 10px !important;
+      background: rgba(255, 255, 255, 0.7) !important;
+    }
+  </style>
 </head>
 <body>
   <!--
