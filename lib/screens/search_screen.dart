@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/place.dart';
 import '../services/nominatim_service.dart';
+import '../services/offline_repository.dart';
 
 enum SearchTab { search, downloaded }
 
@@ -20,6 +21,7 @@ class _SearchScreenState extends State<SearchScreen> {
   SearchTab _tab = SearchTab.search;
   final TextEditingController _controller = TextEditingController();
   final NominatimService _nominatim = NominatimService();
+  final OfflineRepository _offline = OfflineRepository();
 
   Timer? _debounceTimer;
   int _requestSeq = 0;
@@ -27,18 +29,14 @@ class _SearchScreenState extends State<SearchScreen> {
   String? _error;
   List<Place> _searchResults = const <Place>[];
 
-  final List<Place> _downloadedResults = <Place>[
-    Place(
-      name: 'Indore',
-      subtitle: 'Madhya Pradesh, India',
-      center: const LatLng(22.7196, 75.8577),
-      bbox: LatLngBounds(
-        southwest: const LatLng(22.65, 75.78),
-        northeast: const LatLng(22.80, 75.94),
-      ),
-      state: PlaceDownloadState.downloaded,
-    ),
-  ];
+  List<Place> _downloadedResults = const <Place>[];
+  bool _downloadedLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshDownloaded();
+  }
 
   @override
   void dispose() {
@@ -46,6 +44,25 @@ class _SearchScreenState extends State<SearchScreen> {
     _controller.dispose();
     _nominatim.dispose();
     super.dispose();
+  }
+
+  Future<void> _refreshDownloaded() async {
+    if (!mounted) return;
+    setState(() => _downloadedLoading = true);
+    try {
+      final List<Place> list = await _offline.listDownloaded();
+      if (!mounted) return;
+      setState(() {
+        _downloadedResults = list;
+        _downloadedLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _downloadedResults = const <Place>[];
+        _downloadedLoading = false;
+      });
+    }
   }
 
   void _onQueryChanged(String value) {
@@ -89,6 +106,28 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
+  Future<void> _onDownloadTap(Place place) async {
+    setState(() => place.state = PlaceDownloadState.downloading);
+    try {
+      await _offline.download(place);
+      if (!mounted) return;
+      setState(() => place.state = PlaceDownloadState.downloaded);
+      await _refreshDownloaded();
+    } on OfflineNotAvailable catch (e) {
+      if (!mounted) return;
+      setState(() => place.state = PlaceDownloadState.none);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => place.state = PlaceDownloadState.none);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Download failed: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isSearch = _tab == SearchTab.search;
@@ -115,6 +154,9 @@ class _SearchScreenState extends State<SearchScreen> {
                 selected: <SearchTab>{_tab},
                 onSelectionChanged: (Set<SearchTab> next) {
                   setState(() => _tab = next.first);
+                  if (_tab == SearchTab.downloaded) {
+                    _refreshDownloaded();
+                  }
                 },
               ),
             ),
@@ -170,17 +212,25 @@ class _SearchScreenState extends State<SearchScreen> {
           child: Text('Type to search places', style: TextStyle(color: Colors.black54)),
         );
       }
+    } else if (_downloadedLoading) {
+      return const Center(child: CircularProgressIndicator());
     }
-    if (rows.isEmpty) {
-      return const Center(
-        child: Text('No results', style: TextStyle(color: Colors.black54)),
+    final List<Place> visible = (!isSearch && hasQuery)
+        ? rows.where((p) => p.name.toLowerCase().contains(_controller.text.trim().toLowerCase())).toList()
+        : rows;
+    if (visible.isEmpty) {
+      return Center(
+        child: Text(
+          isSearch ? 'No results' : 'No offline regions yet',
+          style: const TextStyle(color: Colors.black54),
+        ),
       );
     }
     return ListView.separated(
-      itemCount: rows.length,
+      itemCount: visible.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
-        final Place p = rows[index];
+        final Place p = visible[index];
         return ListTile(
           title: Text(p.name),
           subtitle: Text(p.subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
@@ -197,7 +247,7 @@ class _SearchScreenState extends State<SearchScreen> {
         case PlaceDownloadState.none:
           return IconButton(
             icon: const Icon(Icons.download_outlined),
-            onPressed: () => setState(() => place.state = PlaceDownloadState.downloading),
+            onPressed: () => _onDownloadTap(place),
           );
         case PlaceDownloadState.downloading:
           return const SizedBox(
@@ -227,8 +277,17 @@ class _SearchScreenState extends State<SearchScreen> {
         ],
       ),
     );
-    if (ok == true) {
-      setState(() => _downloadedResults.remove(place));
+    if (ok != true) return;
+    final int? id = place.regionId;
+    if (id == null) return;
+    try {
+      await _offline.delete(id);
+      await _refreshDownloaded();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $e')),
+      );
     }
   }
 }
