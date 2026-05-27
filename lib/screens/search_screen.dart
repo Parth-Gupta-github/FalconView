@@ -107,21 +107,39 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _onDownloadTap(Place place) async {
-    setState(() => place.state = PlaceDownloadState.downloading);
+    setState(() {
+      place.state = PlaceDownloadState.downloading;
+      place.downloadProgress = 0;
+    });
     try {
-      await _offline.download(place);
+      await _offline.download(
+        place,
+        onProgress: (double pct) {
+          if (!mounted) return;
+          setState(() => place.downloadProgress = pct);
+        },
+      );
       if (!mounted) return;
-      setState(() => place.state = PlaceDownloadState.downloaded);
+      setState(() {
+        place.state = PlaceDownloadState.downloaded;
+        place.downloadProgress = 100;
+      });
       await _refreshDownloaded();
     } on OfflineNotAvailable catch (e) {
       if (!mounted) return;
-      setState(() => place.state = PlaceDownloadState.none);
+      setState(() {
+        place.state = PlaceDownloadState.none;
+        place.downloadProgress = 0;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.message)),
       );
     } catch (e) {
       if (!mounted) return;
-      setState(() => place.state = PlaceDownloadState.none);
+      setState(() {
+        place.state = PlaceDownloadState.none;
+        place.downloadProgress = 0;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Download failed: $e')),
       );
@@ -250,10 +268,26 @@ class _SearchScreenState extends State<SearchScreen> {
             onPressed: () => _onDownloadTap(place),
           );
         case PlaceDownloadState.downloading:
-          return const SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2.5),
+          final double pct = place.downloadProgress.clamp(0, 100);
+          return SizedBox(
+            width: 36,
+            height: 36,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CircularProgressIndicator(
+                  value: pct > 0 ? pct / 100 : null,
+                  strokeWidth: 2.5,
+                ),
+                Text(
+                  '${pct.round()}%',
+                  style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
           );
         case PlaceDownloadState.downloaded:
           return const Icon(Icons.check, color: Colors.green);

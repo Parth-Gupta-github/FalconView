@@ -10,6 +10,7 @@ class Place {
   final LatLng center;
   final LatLngBounds bbox;
   PlaceDownloadState state;
+  double downloadProgress;
   final int? regionId;
 
   Place({
@@ -18,6 +19,7 @@ class Place {
     required this.center,
     required this.bbox,
     this.state = PlaceDownloadState.none,
+    this.downloadProgress = 0,
     this.regionId,
   });
 

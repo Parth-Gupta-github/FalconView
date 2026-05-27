@@ -18,7 +18,10 @@ class OfflineRepository {
   static const double _maxZoom = 16;
   static const String _metaKey = 'place';
 
-  Future<OfflineRegion> download(Place place) async {
+  Future<OfflineRegion> download(
+    Place place, {
+    void Function(double percent)? onProgress,
+  }) async {
     if (kIsWeb) {
       throw OfflineNotAvailable('Offline downloads are not supported on web.');
     }
@@ -31,6 +34,15 @@ class OfflineRepository {
     return downloadOfflineRegion(
       definition,
       metadata: {_metaKey: jsonEncode(place.toJson())},
+      onEvent: onProgress == null
+          ? null
+          : (DownloadRegionStatus event) {
+              if (event is InProgress) {
+                onProgress(event.progress);
+              } else if (event is Success) {
+                onProgress(100);
+              }
+            },
     );
   }
 
