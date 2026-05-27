@@ -8,7 +8,7 @@ class LocationDenied implements Exception {
 }
 
 class LocationService {
-  Future<Position> currentPosition() async {
+  Future<void> _ensurePermission() async {
     if (!await Geolocator.isLocationServiceEnabled()) {
       throw LocationDenied('Location services are disabled. Enable them in settings.');
     }
@@ -23,9 +23,22 @@ class LocationService {
     if (perm == LocationPermission.denied) {
       throw LocationDenied('Location permission denied.');
     }
+  }
 
+  Future<Position> currentPosition() async {
+    await _ensurePermission();
     return Geolocator.getCurrentPosition(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+    );
+  }
+
+  Future<Stream<Position>> positionStream({int distanceFilterMeters = 5}) async {
+    await _ensurePermission();
+    return Geolocator.getPositionStream(
+      locationSettings: LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: distanceFilterMeters,
+      ),
     );
   }
 }

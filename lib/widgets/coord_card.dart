@@ -21,15 +21,22 @@ class CoordCard extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         onLongPress: onLongPress,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             color: TacticalPalette.panelTranslucent,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: TacticalPalette.accent.withValues(alpha: 0.35)),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: TacticalPalette.divider),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -38,7 +45,7 @@ class CoordCard extends StatelessWidget {
               Text(
                 coordsText,
                 style: const TextStyle(
-                  color: TacticalPalette.accent,
+                  color: TacticalPalette.textPrimary,
                   fontFamily: 'monospace',
                   fontSize: 13,
                   fontWeight: FontWeight.w600,

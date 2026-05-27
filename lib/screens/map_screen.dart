@@ -1,18 +1,29 @@
+import 'dart:async';
+import 'dart:math' show Point;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../models/place.dart';
+import '../services/geo_math.dart';
 import '../services/location_service.dart';
 import '../widgets/action_panel.dart';
 import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
+import '../theme/tactical_theme.dart';
 import '../widgets/search_card.dart';
 import 'search_screen.dart';
 
 const String _kLibertyStyle = 'https://tiles.openfreemap.org/styles/liberty';
 const LatLng _kInitialCenter = LatLng(22.7196, 75.8577);
 const double _kInitialZoom = 11;
+
+const String _kRulerSourceId = 'ruler-src';
+const String _kRulerLayerId = 'ruler-layer';
+const String _kMarkPinImageId = 'mark-pin-red';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -30,6 +41,21 @@ class _MapScreenState extends State<MapScreen> {
   MapMode _mode = MapMode.none;
   Place? _selectedPlace;
 
+  final List<Symbol> _markSymbols = <Symbol>[];
+  bool _markPinReady = false;
+
+  LatLng? _rulerA;
+  Circle? _rulerCircleA;
+  Circle? _rulerCircleB;
+  bool _rulerLayerAdded = false;
+
+  Line? _trackLine;
+  final List<LatLng> _trackPoints = <LatLng>[];
+  StreamSubscription<Position>? _trackSub;
+
+  OverlayEntry? _toastEntry;
+  Timer? _toastTimer;
+
   void _onMapCreated(MapLibreMapController controller) {
     _controller = controller;
     controller.addListener(_onControllerChanged);
@@ -46,8 +72,80 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
+    _trackSub?.cancel();
+    _toastTimer?.cancel();
+    _toastEntry?.remove();
+    _toastEntry = null;
     _controller?.removeListener(_onControllerChanged);
     super.dispose();
+  }
+
+  void _showTopToast(String message, {bool error = false}) {
+    _toastTimer?.cancel();
+    _toastEntry?.remove();
+    _toastEntry = null;
+
+    final OverlayState? overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+    final MediaQueryData mq = MediaQuery.of(context);
+    final double topInset = mq.padding.top + 12 + 52 + 12;
+
+    final OverlayEntry entry = OverlayEntry(
+      builder: (_) => Positioned(
+        top: topInset,
+        right: 16,
+        child: Material(
+          color: Colors.transparent,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: mq.size.width * 0.7),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: TacticalPalette.panel,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: error ? TacticalPalette.error : TacticalPalette.divider,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.1),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    error ? Icons.error_outline : Icons.info_outline,
+                    size: 18,
+                    color: error ? TacticalPalette.error : TacticalPalette.accent,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      message,
+                      style: const TextStyle(
+                        color: TacticalPalette.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    _toastEntry = entry;
+    overlay.insert(entry);
+    _toastTimer = Timer(const Duration(milliseconds: 2200), () {
+      _toastEntry?.remove();
+      _toastEntry = null;
+    });
   }
 
   String _formatCoords(LatLng c) =>
@@ -55,7 +153,6 @@ class _MapScreenState extends State<MapScreen> {
 
   String? _distanceBearingLine() {
     if (_selectedPlace == null) return null;
-    // Placeholder — real GeoMath lands in chunk 3.
     return '12.4 km · 045° NE';
   }
 
@@ -90,20 +187,56 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _onModeToggled(MapMode tapped) {
-    setState(() {
-      _mode = (_mode == tapped) ? MapMode.none : tapped;
-    });
+  Future<void> _onModeToggled(MapMode tapped) async {
+    final MapMode next = (_mode == tapped) ? MapMode.none : tapped;
+    final MapMode prev = _mode;
+
+    if (prev == MapMode.ruler && next != MapMode.ruler) {
+      await _abandonRulerInProgress();
+    }
+    if (prev == MapMode.track && next != MapMode.track) {
+      await _trackSub?.cancel();
+      _trackSub = null;
+    }
+
+    setState(() => _mode = next);
+
+    if (next == MapMode.track) {
+      await _startTracking();
+    }
   }
 
-  void _onClear() {
+  Future<void> _onClear() async {
+    await _trackSub?.cancel();
+    _trackSub = null;
+
+    final MapLibreMapController? c = _controller;
+    if (c != null) {
+      await c.clearCircles();
+      await c.clearSymbols();
+      if (_trackLine != null) {
+        await c.removeLine(_trackLine!);
+      }
+      if (_rulerLayerAdded) {
+        await c.removeLayer(_kRulerLayerId);
+        await c.removeSource(_kRulerSourceId);
+      }
+    }
+
     setState(() {
       _mode = MapMode.none;
       _selectedPlace = null;
+      _markSymbols.clear();
+      _rulerA = null;
+      _rulerCircleA = null;
+      _rulerCircleB = null;
+      _rulerLayerAdded = false;
+      _trackLine = null;
+      _trackPoints.clear();
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Cleared')),
-    );
+
+    if (!mounted) return;
+    _showTopToast('Cleared');
   }
 
   Future<void> _onResetBearing() async {
@@ -137,6 +270,207 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  Future<void> _onMapClick(Point<double> _, LatLng coords) async {
+    switch (_mode) {
+      case MapMode.mark:
+        await _addMark(coords);
+        break;
+      case MapMode.ruler:
+        await _handleRulerTap(coords);
+        break;
+      case MapMode.track:
+      case MapMode.none:
+        break;
+    }
+  }
+
+  Future<void> _addMark(LatLng at) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null || !_markPinReady) return;
+    final Symbol s = await c.addSymbol(SymbolOptions(
+      geometry: at,
+      iconImage: _kMarkPinImageId,
+      iconAnchor: 'bottom',
+      iconSize: 0.55,
+    ));
+    _markSymbols.add(s);
+  }
+
+  Future<void> _registerMarkPin() async {
+    final MapLibreMapController? c = _controller;
+    if (c == null || _markPinReady) return;
+    final Uint8List bytes = await _renderIconToPng(
+      Icons.location_on,
+      const Color(0xFFE53935),
+      96,
+    );
+    await c.addImage(_kMarkPinImageId, bytes);
+    if (!mounted) return;
+    setState(() => _markPinReady = true);
+  }
+
+  Future<Uint8List> _renderIconToPng(IconData icon, Color color, double size) async {
+    final ui.PictureRecorder recorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(recorder);
+    final TextPainter tp = TextPainter(
+      text: TextSpan(
+        text: String.fromCharCode(icon.codePoint),
+        style: TextStyle(
+          fontSize: size,
+          fontFamily: icon.fontFamily,
+          package: icon.fontPackage,
+          color: color,
+          shadows: const <Shadow>[
+            Shadow(color: Color(0x66000000), blurRadius: 2, offset: Offset(0, 1)),
+          ],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    tp.layout();
+    tp.paint(canvas, Offset.zero);
+    final ui.Image img = await recorder
+        .endRecording()
+        .toImage(tp.width.ceil(), tp.height.ceil());
+    final ByteData? bd = await img.toByteData(format: ui.ImageByteFormat.png);
+    return bd!.buffer.asUint8List();
+  }
+
+  Future<void> _handleRulerTap(LatLng at) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+
+    if (_rulerCircleA != null && _rulerCircleB != null) {
+      await _resetRuler();
+    }
+
+    if (_rulerA == null) {
+      _rulerA = at;
+      _rulerCircleA = await c.addCircle(_rulerEndpointOptions(at));
+      return;
+    }
+
+    final LatLng a = _rulerA!;
+    _rulerCircleB = await c.addCircle(_rulerEndpointOptions(at));
+    await _drawRulerLine(a, at);
+
+    final double meters = haversineMeters(a, at);
+    if (!mounted) return;
+    _showTopToast('Distance: ${formatDistance(meters)}');
+  }
+
+  CircleOptions _rulerEndpointOptions(LatLng at) => CircleOptions(
+        geometry: at,
+        circleRadius: 6,
+        circleColor: '#FF1744',
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: 2,
+      );
+
+  Map<String, dynamic> _lineFeature(List<LatLng> points) => <String, dynamic>{
+        'type': 'Feature',
+        'geometry': <String, dynamic>{
+          'type': 'LineString',
+          'coordinates': points
+              .map((p) => <double>[p.longitude, p.latitude])
+              .toList(),
+        },
+      };
+
+  Future<void> _drawRulerLine(LatLng a, LatLng b) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    final Map<String, dynamic> data = _lineFeature(<LatLng>[a, b]);
+
+    if (!_rulerLayerAdded) {
+      await c.addGeoJsonSource(_kRulerSourceId, data);
+      await c.addLineLayer(
+        _kRulerSourceId,
+        _kRulerLayerId,
+        const LineLayerProperties(
+          lineColor: '#FF1744',
+          lineWidth: 3.0,
+          lineDasharray: <double>[2, 2],
+          lineCap: 'round',
+          lineJoin: 'round',
+        ),
+      );
+      _rulerLayerAdded = true;
+    } else {
+      await c.setGeoJsonSource(_kRulerSourceId, data);
+    }
+  }
+
+  Future<void> _resetRuler() async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    if (_rulerCircleA != null) await c.removeCircle(_rulerCircleA!);
+    if (_rulerCircleB != null) await c.removeCircle(_rulerCircleB!);
+    if (_rulerLayerAdded) {
+      await c.removeLayer(_kRulerLayerId);
+      await c.removeSource(_kRulerSourceId);
+      _rulerLayerAdded = false;
+    }
+    _rulerA = null;
+    _rulerCircleA = null;
+    _rulerCircleB = null;
+  }
+
+  Future<void> _abandonRulerInProgress() async {
+    if (_rulerCircleA != null && _rulerCircleB == null) {
+      await _resetRuler();
+    }
+  }
+
+  Future<void> _startTracking() async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+
+    if (_trackLine != null) {
+      await c.removeLine(_trackLine!);
+      _trackLine = null;
+      _trackPoints.clear();
+    }
+
+    try {
+      final Stream<Position> stream = await _locationService.positionStream();
+      _trackSub = stream.listen(_onTrackPosition, onError: (Object e) {
+        if (!mounted) return;
+        _showTopToast('Tracking error: $e', error: true);
+      });
+    } on LocationDenied catch (e) {
+      if (!mounted) return;
+      _showTopToast(e.message, error: true);
+      setState(() => _mode = MapMode.none);
+    } catch (e) {
+      if (!mounted) return;
+      _showTopToast('Could not start tracking: $e', error: true);
+      setState(() => _mode = MapMode.none);
+    }
+  }
+
+  Future<void> _onTrackPosition(Position pos) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    final LatLng p = LatLng(pos.latitude, pos.longitude);
+    _trackPoints.add(p);
+    if (_trackPoints.length < 2) return;
+
+    if (_trackLine == null) {
+      _trackLine = await c.addLine(LineOptions(
+        geometry: List<LatLng>.from(_trackPoints),
+        lineColor: '#00C853',
+        lineWidth: 4.0,
+        lineOpacity: 0.9,
+      ));
+    } else {
+      await c.updateLine(
+        _trackLine!,
+        LineOptions(geometry: List<LatLng>.from(_trackPoints)),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -150,6 +484,8 @@ class _MapScreenState extends State<MapScreen> {
               zoom: _kInitialZoom,
             ),
             onMapCreated: _onMapCreated,
+            onStyleLoadedCallback: _registerMarkPin,
+            onMapClick: _onMapClick,
             trackCameraPosition: true,
             compassEnabled: false,
             myLocationEnabled: true,
