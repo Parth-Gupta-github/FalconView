@@ -88,6 +88,8 @@ class _MapScreenState extends State<MapScreen> {
   OverlayEntry? _toastEntry;
   Timer? _toastTimer;
 
+  String? _statusMessage;
+
   final GlobalKey _actionPanelKey = GlobalKey();
 
   void _onMapCreated(MapLibreMapController controller) {
@@ -111,6 +113,11 @@ class _MapScreenState extends State<MapScreen> {
     _toastEntry = null;
     _controller?.removeListener(_onControllerChanged);
     super.dispose();
+  }
+
+  void _setStatusMessage(String? message) {
+    if (!mounted) return;
+    setState(() => _statusMessage = message);
   }
 
   void _showTopToast(String message, {bool error = false}) {
@@ -224,18 +231,14 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _selectedPlace = result);
     unawaited(_refreshGpsForBearing());
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Flew to ${result.name}')),
-    );
+    _showTopToast('Flew to ${result.name}');
   }
 
   void _onCoordCardTap() {
     if (_selectedPlace != null) {
       setState(() => _selectedPlace = null);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Long-press to change format')),
-      );
+      _showTopToast('Long-press to change format');
     }
   }
 
@@ -243,9 +246,7 @@ class _MapScreenState extends State<MapScreen> {
     final CoordinateFormat next = _coordFormat.next();
     setState(() => _coordFormat = next);
     _saveCoordFormat(next);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Format: ${next.label}')),
-    );
+    _showTopToast('Format: ${next.label}');
   }
 
   Future<void> _onModeToggled(MapMode tapped) async {
@@ -294,6 +295,7 @@ class _MapScreenState extends State<MapScreen> {
       _trackToCircle = null;
       _gpsHalo = null;
       _gpsDot = null;
+      _statusMessage = null;
     });
 
     if (!mounted) return;
@@ -395,6 +397,7 @@ class _MapScreenState extends State<MapScreen> {
       iconSize: 0.55,
     ));
     _markSymbols.add(s);
+    _setStatusMessage('Markers: ${_markSymbols.length}');
   }
 
   Future<void> _registerMarkPin() async {
@@ -458,7 +461,7 @@ class _MapScreenState extends State<MapScreen> {
     final double meters =
         GeoMath.haversineMeters(a.latitude, a.longitude, at.latitude, at.longitude);
     if (!mounted) return;
-    _showTopToast('Distance: ${GeoMath.formatDistance(meters)}');
+    _setStatusMessage('Distance: ${GeoMath.formatDistance(meters)}');
   }
 
   CircleOptions _rulerEndpointOptions(LatLng at) => CircleOptions(
@@ -540,7 +543,7 @@ class _MapScreenState extends State<MapScreen> {
         circleStrokeWidth: 2,
       ));
       if (!mounted) return;
-      _showTopToast('Tap destination on the map');
+      _setStatusMessage('Tap destination on the map');
     } on LocationDenied catch (e) {
       if (!mounted) return;
       _showTopToast(e.message, error: true);
@@ -584,7 +587,7 @@ class _MapScreenState extends State<MapScreen> {
         await c.updateLine(_trackLine!, LineOptions(geometry: route.geometry));
       }
       if (!mounted) return;
-      _showTopToast('Path: ${GeoMath.formatDistance(route.distanceMeters)}');
+      _setStatusMessage('Path: ${GeoMath.formatDistance(route.distanceMeters)}');
     } on RoutingException catch (e) {
       if (!mounted || seq != _routingSeq) return;
       _showTopToast(e.message, error: true);
@@ -650,6 +653,13 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                     ),
                   ),
+                  if (_statusMessage != null) ...[
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.topRight,
+                      child: _StatusBadge(message: _statusMessage!),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -694,3 +704,41 @@ class _MapScreenState extends State<MapScreen> {
   }
 }
 
+class _StatusBadge extends StatelessWidget {
+  final String message;
+  const _StatusBadge({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: TacticalPalette.panel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: TacticalPalette.accent.withValues(alpha: 0.5)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.push_pin_outlined, size: 14, color: TacticalPalette.accent),
+          const SizedBox(width: 6),
+          Text(
+            message,
+            style: const TextStyle(
+              color: TacticalPalette.textPrimary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
