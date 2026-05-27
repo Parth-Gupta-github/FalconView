@@ -1,9 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/place.dart';
 import '../services/location_service.dart';
+import '../util/coordinate_formatter.dart';
+import '../util/geo_math.dart';
 import '../widgets/action_panel.dart';
 import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
@@ -13,6 +18,7 @@ import 'search_screen.dart';
 const String _kLibertyStyle = 'https://tiles.openfreemap.org/styles/liberty';
 const LatLng _kInitialCenter = LatLng(22.7196, 75.8577);
 const double _kInitialZoom = 11;
+const String _kCoordFormatPrefKey = 'coord_format';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -29,6 +35,28 @@ class _MapScreenState extends State<MapScreen> {
   double _bearing = 0;
   MapMode _mode = MapMode.none;
   Place? _selectedPlace;
+  LatLng? _currentGps;
+  CoordinateFormat _coordFormat = CoordinateFormat.decimal;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCoordFormat();
+  }
+
+  Future<void> _loadCoordFormat() async {
+    final prefs = await SharedPreferences.getInstance();
+    final int? idx = prefs.getInt(_kCoordFormatPrefKey);
+    if (idx != null && idx >= 0 && idx < CoordinateFormat.values.length) {
+      if (!mounted) return;
+      setState(() => _coordFormat = CoordinateFormat.values[idx]);
+    }
+  }
+
+  Future<void> _saveCoordFormat(CoordinateFormat fmt) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kCoordFormatPrefKey, fmt.index);
+  }
 
   void _onMapCreated(MapLibreMapController controller) {
     _controller = controller;
@@ -51,12 +79,35 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   String _formatCoords(LatLng c) =>
-      '${c.latitude.toStringAsFixed(5)}, ${c.longitude.toStringAsFixed(5)}';
+      CoordinateFormatter.format(c.latitude, c.longitude, _coordFormat);
 
   String? _distanceBearingLine() {
-    if (_selectedPlace == null) return null;
-    // Placeholder — real GeoMath lands in chunk 3.
-    return '12.4 km · 045° NE';
+    final Place? place = _selectedPlace;
+    final LatLng? gps = _currentGps;
+    if (place == null || gps == null) return null;
+    final double meters = GeoMath.haversineMeters(
+      gps.latitude,
+      gps.longitude,
+      place.center.latitude,
+      place.center.longitude,
+    );
+    final double bearing = GeoMath.initialBearingDegrees(
+      gps.latitude,
+      gps.longitude,
+      place.center.latitude,
+      place.center.longitude,
+    );
+    return '${GeoMath.formatDistance(meters)} · ${GeoMath.formatBearing(bearing)}';
+  }
+
+  Future<void> _refreshGpsForBearing() async {
+    try {
+      final Position pos = await _locationService.currentPosition();
+      if (!mounted) return;
+      setState(() => _currentGps = LatLng(pos.latitude, pos.longitude));
+    } on LocationDenied {
+      // Keep _currentGps null — distance/bearing line will simply not show.
+    }
   }
 
   Future<void> _openSearch() async {
@@ -68,6 +119,7 @@ class _MapScreenState extends State<MapScreen> {
       CameraUpdate.newLatLngZoom(result.center, 13),
     );
     setState(() => _selectedPlace = result);
+    unawaited(_refreshGpsForBearing());
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Flew to ${result.name}')),
@@ -85,8 +137,11 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _onCoordCardLongPress() {
+    final CoordinateFormat next = _coordFormat.next();
+    setState(() => _coordFormat = next);
+    _saveCoordFormat(next);
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Format cycling lands in chunk 3')),
+      SnackBar(content: Text('Format: ${next.label}')),
     );
   }
 
@@ -121,6 +176,7 @@ class _MapScreenState extends State<MapScreen> {
     try {
       final Position pos = await _locationService.currentPosition();
       if (!mounted) return;
+      setState(() => _currentGps = LatLng(pos.latitude, pos.longitude));
       await _controller?.animateCamera(
         CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 16),
       );
@@ -169,7 +225,7 @@ class _MapScreenState extends State<MapScreen> {
                   Align(
                     alignment: Alignment.topLeft,
                     child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 240),
+                      constraints: const BoxConstraints(maxWidth: 260),
                       child: CoordCard(
                         coordsText: _formatCoords(_mapCenter),
                         distanceBearingText: _distanceBearingLine(),
@@ -218,3 +274,4 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 }
+
