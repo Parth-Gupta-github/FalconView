@@ -21,13 +21,19 @@ class _SearchScreenState extends State<SearchScreen> {
       name: 'Indore',
       subtitle: 'Madhya Pradesh, India',
       center: const LatLng(22.7196, 75.8577),
-      bbox: const LatLngBounds(south: 22.65, north: 22.80, west: 75.78, east: 75.94),
+      bbox: LatLngBounds(
+        southwest: const LatLng(22.65, 75.78),
+        northeast: const LatLng(22.80, 75.94),
+      ),
     ),
     Place(
       name: 'Bhopal',
       subtitle: 'Madhya Pradesh, India',
       center: const LatLng(23.2599, 77.4126),
-      bbox: const LatLngBounds(south: 23.15, north: 23.35, west: 77.30, east: 77.53),
+      bbox: LatLngBounds(
+        southwest: const LatLng(23.15, 77.30),
+        northeast: const LatLng(23.35, 77.53),
+      ),
     ),
   ];
 
@@ -36,7 +42,10 @@ class _SearchScreenState extends State<SearchScreen> {
       name: 'Indore',
       subtitle: 'Madhya Pradesh, India',
       center: const LatLng(22.7196, 75.8577),
-      bbox: const LatLngBounds(south: 22.65, north: 22.80, west: 75.78, east: 75.94),
+      bbox: LatLngBounds(
+        southwest: const LatLng(22.65, 75.78),
+        northeast: const LatLng(22.80, 75.94),
+      ),
       state: PlaceDownloadState.downloaded,
     ),
   ];

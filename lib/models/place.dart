@@ -1,21 +1,6 @@
-class LatLng {
-  final double latitude;
-  final double longitude;
-  const LatLng(this.latitude, this.longitude);
-}
+import 'package:maplibre_gl/maplibre_gl.dart';
 
-class LatLngBounds {
-  final double south;
-  final double north;
-  final double west;
-  final double east;
-  const LatLngBounds({
-    required this.south,
-    required this.north,
-    required this.west,
-    required this.east,
-  });
-}
+export 'package:maplibre_gl/maplibre_gl.dart' show LatLng, LatLngBounds;
 
 enum PlaceDownloadState { none, downloading, downloaded }
 

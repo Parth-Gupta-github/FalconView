@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../models/place.dart';
-import '../theme/tactical_theme.dart';
 import '../widgets/action_panel.dart';
 import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
 import '../widgets/search_card.dart';
 import 'search_screen.dart';
+
+const String _kLibertyStyle = 'https://tiles.openfreemap.org/styles/liberty';
+const LatLng _kInitialCenter = LatLng(22.7196, 75.8577);
+const double _kInitialZoom = 11;
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -16,18 +20,39 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  // Placeholder state — wired to real MapLibre callbacks in the next pass.
-  LatLng _mapCenter = const LatLng(22.7196, 75.8577);
+  MapLibreMapController? _controller;
+
+  LatLng _mapCenter = _kInitialCenter;
   double _bearing = 0;
   MapMode _mode = MapMode.none;
   Place? _selectedPlace;
+
+  void _onMapCreated(MapLibreMapController controller) {
+    _controller = controller;
+    controller.addListener(_onControllerChanged);
+  }
+
+  void _onControllerChanged() {
+    final CameraPosition? pos = _controller?.cameraPosition;
+    if (pos == null) return;
+    setState(() {
+      _mapCenter = pos.target;
+      _bearing = pos.bearing;
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller?.removeListener(_onControllerChanged);
+    super.dispose();
+  }
 
   String _formatCoords(LatLng c) =>
       '${c.latitude.toStringAsFixed(5)}, ${c.longitude.toStringAsFixed(5)}';
 
   String? _distanceBearingLine() {
     if (_selectedPlace == null) return null;
-    // Placeholder values; real geo math comes with GeoMath util.
+    // Placeholder — real GeoMath lands in chunk 3.
     return '12.4 km · 045° NE';
   }
 
@@ -36,10 +61,11 @@ class _MapScreenState extends State<MapScreen> {
       MaterialPageRoute(builder: (_) => const SearchScreen()),
     );
     if (result == null || !mounted) return;
-    setState(() {
-      _mapCenter = result.center;
-      _selectedPlace = result;
-    });
+    await _controller?.animateCamera(
+      CameraUpdate.newLatLngZoom(result.center, 13),
+    );
+    setState(() => _selectedPlace = result);
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Flew to ${result.name}')),
     );
@@ -57,7 +83,7 @@ class _MapScreenState extends State<MapScreen> {
 
   void _onCoordCardLongPress() {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Format: DMS')),
+      const SnackBar(content: Text('Format cycling lands in chunk 3')),
     );
   }
 
@@ -77,13 +103,20 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _onResetBearing() {
-    setState(() => _bearing = 0);
+  Future<void> _onResetBearing() async {
+    await _controller?.animateCamera(
+      CameraUpdate.bearingTo(0),
+      duration: const Duration(milliseconds: 400),
+    );
+    await _controller?.animateCamera(
+      CameraUpdate.tiltTo(0),
+      duration: const Duration(milliseconds: 400),
+    );
   }
 
   void _onRecenter() {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Recenter on GPS (wire geolocator next)')),
+      const SnackBar(content: Text('Recenter on GPS (geolocator wires in chunk 2)')),
     );
   }
 
@@ -93,7 +126,19 @@ class _MapScreenState extends State<MapScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          _MapPlaceholder(center: _mapCenter),
+          MapLibreMap(
+            styleString: _kLibertyStyle,
+            initialCameraPosition: const CameraPosition(
+              target: _kInitialCenter,
+              zoom: _kInitialZoom,
+            ),
+            onMapCreated: _onMapCreated,
+            trackCameraPosition: true,
+            compassEnabled: false,
+            myLocationEnabled: false,
+            rotateGesturesEnabled: true,
+            tiltGesturesEnabled: true,
+          ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -153,62 +198,4 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-}
-
-class _MapPlaceholder extends StatelessWidget {
-  final LatLng center;
-  const _MapPlaceholder({required this.center});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFFD8E5DC), Color(0xFFB7CFC0)],
-        ),
-      ),
-      child: CustomPaint(
-        painter: _GridPainter(),
-        child: Center(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: TacticalPalette.panelTranslucent,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              'Map placeholder\n${center.latitude.toStringAsFixed(4)}, ${center.longitude.toStringAsFixed(4)}',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: TacticalPalette.accent,
-                fontFamily: 'monospace',
-                fontSize: 12,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.black12
-      ..strokeWidth = 1;
-    const step = 48.0;
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
