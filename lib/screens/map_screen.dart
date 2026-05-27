@@ -10,6 +10,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import '../models/place.dart';
 import '../services/geo_math.dart';
 import '../services/location_service.dart';
+import '../services/routing_service.dart';
 import '../widgets/action_panel.dart';
 import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
@@ -50,11 +51,19 @@ class _MapScreenState extends State<MapScreen> {
   bool _rulerLayerAdded = false;
 
   Line? _trackLine;
-  final List<LatLng> _trackPoints = <LatLng>[];
-  StreamSubscription<Position>? _trackSub;
+  LatLng? _trackFrom;
+  Circle? _trackFromCircle;
+  Circle? _trackToCircle;
+  final RoutingService _routing = RoutingService();
+  int _routingSeq = 0;
+
+  Circle? _gpsHalo;
+  Circle? _gpsDot;
 
   OverlayEntry? _toastEntry;
   Timer? _toastTimer;
+
+  final GlobalKey _actionPanelKey = GlobalKey();
 
   void _onMapCreated(MapLibreMapController controller) {
     _controller = controller;
@@ -72,7 +81,6 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
-    _trackSub?.cancel();
     _toastTimer?.cancel();
     _toastEntry?.remove();
     _toastEntry = null;
@@ -195,21 +203,17 @@ class _MapScreenState extends State<MapScreen> {
       await _abandonRulerInProgress();
     }
     if (prev == MapMode.track && next != MapMode.track) {
-      await _trackSub?.cancel();
-      _trackSub = null;
+      await _clearTrackOverlay();
     }
 
     setState(() => _mode = next);
 
     if (next == MapMode.track) {
-      await _startTracking();
+      await _startTrackMode();
     }
   }
 
   Future<void> _onClear() async {
-    await _trackSub?.cancel();
-    _trackSub = null;
-
     final MapLibreMapController? c = _controller;
     if (c != null) {
       await c.clearCircles();
@@ -232,7 +236,11 @@ class _MapScreenState extends State<MapScreen> {
       _rulerCircleB = null;
       _rulerLayerAdded = false;
       _trackLine = null;
-      _trackPoints.clear();
+      _trackFrom = null;
+      _trackFromCircle = null;
+      _trackToCircle = null;
+      _gpsHalo = null;
+      _gpsDot = null;
     });
 
     if (!mounted) return;
@@ -240,13 +248,18 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _onResetBearing() async {
-    await _controller?.animateCamera(
-      CameraUpdate.bearingTo(0),
-      duration: const Duration(milliseconds: 400),
-    );
-    await _controller?.animateCamera(
-      CameraUpdate.tiltTo(0),
-      duration: const Duration(milliseconds: 400),
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    final CameraPosition? pos = c.cameraPosition;
+    if (pos == null) return;
+    await c.animateCamera(
+      CameraUpdate.newCameraPosition(CameraPosition(
+        target: pos.target,
+        zoom: pos.zoom,
+        bearing: 0,
+        tilt: 0,
+      )),
+      duration: const Duration(milliseconds: 450),
     );
   }
 
@@ -254,23 +267,47 @@ class _MapScreenState extends State<MapScreen> {
     try {
       final Position pos = await _locationService.currentPosition();
       if (!mounted) return;
+      final LatLng here = LatLng(pos.latitude, pos.longitude);
       await _controller?.animateCamera(
-        CameraUpdate.newLatLngZoom(LatLng(pos.latitude, pos.longitude), 16),
+        CameraUpdate.newLatLngZoom(here, 16),
       );
+      await _updateGpsMarker(here);
     } on LocationDenied catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
+      _showTopToast(e.message, error: true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not get location: $e')),
-      );
+      _showTopToast('Could not get location: $e', error: true);
     }
   }
 
-  Future<void> _onMapClick(Point<double> _, LatLng coords) async {
+  Future<void> _updateGpsMarker(LatLng at) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    if (_gpsHalo == null || _gpsDot == null) {
+      _gpsHalo = await c.addCircle(CircleOptions(
+        geometry: at,
+        circleRadius: 16,
+        circleColor: '#2563EB',
+        circleOpacity: 0.18,
+        circleStrokeWidth: 0,
+      ));
+      _gpsDot = await c.addCircle(CircleOptions(
+        geometry: at,
+        circleRadius: 6,
+        circleColor: '#2563EB',
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: 2,
+        circleOpacity: 1.0,
+      ));
+    } else {
+      await c.updateCircle(_gpsHalo!, CircleOptions(geometry: at));
+      await c.updateCircle(_gpsDot!, CircleOptions(geometry: at));
+    }
+  }
+
+  Future<void> _onMapClick(Point<double> screenPoint, LatLng coords) async {
+    if (_isOverActionPanel(screenPoint)) return;
     switch (_mode) {
       case MapMode.mark:
         await _addMark(coords);
@@ -279,9 +316,19 @@ class _MapScreenState extends State<MapScreen> {
         await _handleRulerTap(coords);
         break;
       case MapMode.track:
+        await _setTrackDestination(coords);
+        break;
       case MapMode.none:
         break;
     }
+  }
+
+  bool _isOverActionPanel(Point<double> screenPoint) {
+    final RenderObject? ro = _actionPanelKey.currentContext?.findRenderObject();
+    if (ro is! RenderBox) return false;
+    final Offset topLeft = ro.localToGlobal(Offset.zero);
+    final Rect rect = topLeft & ro.size;
+    return rect.contains(Offset(screenPoint.x, screenPoint.y));
   }
 
   Future<void> _addMark(LatLng at) async {
@@ -422,53 +469,87 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  Future<void> _startTracking() async {
-    final MapLibreMapController? c = _controller;
-    if (c == null) return;
-
-    if (_trackLine != null) {
-      await c.removeLine(_trackLine!);
-      _trackLine = null;
-      _trackPoints.clear();
-    }
-
+  Future<void> _startTrackMode() async {
     try {
-      final Stream<Position> stream = await _locationService.positionStream();
-      _trackSub = stream.listen(_onTrackPosition, onError: (Object e) {
-        if (!mounted) return;
-        _showTopToast('Tracking error: $e', error: true);
-      });
+      final Position pos = await _locationService.currentPosition();
+      if (!mounted) return;
+      final LatLng here = LatLng(pos.latitude, pos.longitude);
+      final MapLibreMapController? c = _controller;
+      if (c == null) return;
+      _trackFrom = here;
+      _trackFromCircle = await c.addCircle(CircleOptions(
+        geometry: here,
+        circleRadius: 7,
+        circleColor: '#2563EB',
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: 2,
+      ));
+      if (!mounted) return;
+      _showTopToast('Tap destination on the map');
     } on LocationDenied catch (e) {
       if (!mounted) return;
       _showTopToast(e.message, error: true);
       setState(() => _mode = MapMode.none);
     } catch (e) {
       if (!mounted) return;
-      _showTopToast('Could not start tracking: $e', error: true);
+      _showTopToast('Could not get location: $e', error: true);
       setState(() => _mode = MapMode.none);
     }
   }
 
-  Future<void> _onTrackPosition(Position pos) async {
+  Future<void> _setTrackDestination(LatLng dest) async {
     final MapLibreMapController? c = _controller;
-    if (c == null) return;
-    final LatLng p = LatLng(pos.latitude, pos.longitude);
-    _trackPoints.add(p);
-    if (_trackPoints.length < 2) return;
+    if (c == null || _trackFrom == null) return;
 
-    if (_trackLine == null) {
-      _trackLine = await c.addLine(LineOptions(
-        geometry: List<LatLng>.from(_trackPoints),
-        lineColor: '#00C853',
-        lineWidth: 4.0,
-        lineOpacity: 0.9,
+    if (_trackToCircle == null) {
+      _trackToCircle = await c.addCircle(CircleOptions(
+        geometry: dest,
+        circleRadius: 7,
+        circleColor: '#00C853',
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: 2,
       ));
     } else {
-      await c.updateLine(
-        _trackLine!,
-        LineOptions(geometry: List<LatLng>.from(_trackPoints)),
-      );
+      await c.updateCircle(_trackToCircle!, CircleOptions(geometry: dest));
     }
+
+    _showTopToast('Routing…');
+    final int seq = ++_routingSeq;
+    try {
+      final RouteResult route = await _routing.route(_trackFrom!, dest);
+      if (!mounted || seq != _routingSeq || _mode != MapMode.track) return;
+      if (_trackLine == null) {
+        _trackLine = await c.addLine(LineOptions(
+          geometry: route.geometry,
+          lineColor: '#00C853',
+          lineWidth: 4.0,
+          lineOpacity: 0.9,
+        ));
+      } else {
+        await c.updateLine(_trackLine!, LineOptions(geometry: route.geometry));
+      }
+      if (!mounted) return;
+      _showTopToast('Path: ${formatDistance(route.distanceMeters)}');
+    } on RoutingException catch (e) {
+      if (!mounted || seq != _routingSeq) return;
+      _showTopToast(e.message, error: true);
+    } catch (e) {
+      if (!mounted || seq != _routingSeq) return;
+      _showTopToast('Routing failed: $e', error: true);
+    }
+  }
+
+  Future<void> _clearTrackOverlay() async {
+    final MapLibreMapController? c = _controller;
+    if (c != null) {
+      if (_trackLine != null) await c.removeLine(_trackLine!);
+      if (_trackFromCircle != null) await c.removeCircle(_trackFromCircle!);
+      if (_trackToCircle != null) await c.removeCircle(_trackToCircle!);
+    }
+    _trackLine = null;
+    _trackFrom = null;
+    _trackFromCircle = null;
+    _trackToCircle = null;
   }
 
   @override
@@ -542,10 +623,13 @@ class _MapScreenState extends State<MapScreen> {
             bottom: 16,
             child: SafeArea(
               top: false,
-              child: ActionPanel(
-                mode: _mode,
-                onModeToggled: _onModeToggled,
-                onClear: _onClear,
+              child: KeyedSubtree(
+                key: _actionPanelKey,
+                child: ActionPanel(
+                  mode: _mode,
+                  onModeToggled: _onModeToggled,
+                  onClear: _onClear,
+                ),
               ),
             ),
           ),
