@@ -149,7 +149,14 @@ class _MapScreenState extends State<MapScreen> {
     final OverlayState? overlay = Overlay.maybeOf(context);
     if (overlay == null) return;
     final MediaQueryData mq = MediaQuery.of(context);
-    final double topInset = mq.padding.top + 12 + 52 + 12;
+    // Stack from the status bar down: search bar, coord/tier row, optional
+    // pinned status badge. The toast sits below all of it so it never
+    // overlaps the tier pill or the status badge.
+    const double searchBar = 52 + 12;
+    const double coordRow = 72 + 10;
+    final double statusBadge = _statusMessage != null ? 36 + 8 : 0;
+    final double topInset =
+        mq.padding.top + 12 + searchBar + coordRow + statusBadge + 8;
 
     final OverlayEntry entry = OverlayEntry(
       builder: (_) => Positioned(
