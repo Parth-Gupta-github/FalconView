@@ -97,6 +97,8 @@ class _MapScreenState extends State<MapScreen> {
     controller.addListener(_onControllerChanged);
   }
 
+  int? _lastToastedZoomLevel;
+
   void _onControllerChanged() {
     final CameraPosition? pos = _controller?.cameraPosition;
     if (pos == null) return;
@@ -104,6 +106,11 @@ class _MapScreenState extends State<MapScreen> {
       _mapCenter = pos.target;
       _bearing = pos.bearing;
     });
+    final int level = pos.zoom.round();
+    if (_lastToastedZoomLevel != level) {
+      _lastToastedZoomLevel = level;
+      _showTopToast('Zoom: $level');
+    }
   }
 
   @override
