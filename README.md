@@ -1,6 +1,18 @@
 # FalconView
 
-A Flutter map application built on MapLibre GL with OpenFreeMap Liberty tiles. Tactical-style UI with edge-to-edge map rendering, live coordinate readout, place search, GPS recenter, and a four-tool action panel for marking, measuring, and routing.
+FalconView is a tactical-style mapping app for field navigation. It puts an edge-to-edge map under your fingertips with a live coordinate readout (Decimal, DMS, MGRS, UTM), fast place search that works in downloaded regions even without internet, one-tap GPS recentering with a persistent location marker, and a four-tool action panel for dropping marks, measuring distance, and routing to a destination. FalconView is designed for situations where the map is the primary surface — clean, high-contrast, and built to stay useful when the network isn't.
+
+## What's new
+
+- **Offline routing** — TRACK now works without internet inside downloaded regions. The road graph is built locally from MVT tiles at download time and Dijkstra runs on-device.
+- **MVT-based offline POIs** — place search no longer depends on Overpass for downloaded regions; POIs are extracted directly from the same MVT tiles used for the map.
+- **Unified tile walk** — POIs and the road graph are now built in a single pass over each region's tiles, cutting download time and bandwidth.
+- **Chunked DB writes + cached search handles** — large region indexes write in batches and reuse open SQLite handles, so search stays snappy even on big bounding boxes.
+- **Region download UX** — the Downloaded tab now shows region size and data source per region.
+- **Fly-to on marker tap** — tapping a marker animates the camera onto it.
+- **Toast layout fix** — top-right toasts now sit below the pinned status badge so they no longer overlap the tier pill.
+- **App-name consistency** — the FalconView name is now used uniformly across Dart, the web `<title>`, and the PWA manifest.
+- **Pro-tier gating** — offline download and offline POI fallback are restricted to the Pro tier (see the Plans screen).
 
 ## Features
 
