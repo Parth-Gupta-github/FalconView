@@ -49,7 +49,7 @@ void main() {
         debugPrint('subscriptionService.load failed: $e\n$s');
       }
 
-      runApp(const FalconMapApp());
+      runApp(const FalconViewApp());
     },
     (Object error, StackTrace stack) {
       debugPrint('Uncaught zone error: $error\n$stack');
@@ -57,15 +57,15 @@ void main() {
   );
 }
 
-class FalconMapApp extends StatelessWidget {
-  const FalconMapApp({super.key});
+class FalconViewApp extends StatelessWidget {
+  const FalconViewApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'FalconMap',
+      title: 'FalconView',
       debugShowCheckedModeBanner: false,
-      theme: buildFalconMapTheme(),
+      theme: buildFalconViewTheme(),
       home: const MapScreen(),
     );
   }

@@ -1,6 +1,6 @@
 {
-    "name": "falconview",
-    "short_name": "falconview",
+    "name": "FalconView",
+    "short_name": "FalconView",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#234B30",

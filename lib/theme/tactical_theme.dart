@@ -14,7 +14,7 @@ class TacticalPalette {
   static const Color divider = Color(0xFFE2E8F0);
 }
 
-ThemeData buildFalconMapTheme() {
+ThemeData buildFalconViewTheme() {
   final ColorScheme scheme = ColorScheme.fromSeed(
     seedColor: TacticalPalette.accent,
     brightness: Brightness.light,
