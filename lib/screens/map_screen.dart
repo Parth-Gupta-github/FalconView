@@ -85,6 +85,9 @@ class _MapScreenState extends State<MapScreen> {
   Circle? _gpsHalo;
   Circle? _gpsDot;
 
+  Circle? _selectedPlaceHalo;
+  Circle? _selectedPlaceDot;
+
   OverlayEntry? _toastEntry;
   Timer? _toastTimer;
 
@@ -232,18 +235,68 @@ class _MapScreenState extends State<MapScreen> {
       MaterialPageRoute(builder: (_) => const SearchScreen()),
     );
     if (result == null || !mounted) return;
-    await _controller?.animateCamera(
-      CameraUpdate.newLatLngZoom(result.center, 13),
-    );
+    final MapLibreMapController? c = _controller;
+    if (c != null) {
+      try {
+        await c.animateCamera(
+          CameraUpdate.newLatLngBounds(
+            result.bbox,
+            left: 60,
+            right: 60,
+            top: 120,
+            bottom: 120,
+          ),
+        );
+      } catch (_) {
+        await c.animateCamera(CameraUpdate.newLatLngZoom(result.center, 15));
+      }
+      await _updateSelectedPlaceMarker(result.center);
+    }
     setState(() => _selectedPlace = result);
     unawaited(_refreshGpsForBearing());
     if (!mounted) return;
-    _showTopToast('Flew to ${result.name}');
+    _showTopToast('Located: ${result.name}');
+  }
+
+  Future<void> _updateSelectedPlaceMarker(LatLng at) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    if (_selectedPlaceHalo == null || _selectedPlaceDot == null) {
+      _selectedPlaceHalo = await c.addCircle(CircleOptions(
+        geometry: at,
+        circleRadius: 18,
+        circleColor: '#FF7043',
+        circleOpacity: 0.22,
+        circleStrokeWidth: 0,
+      ));
+      _selectedPlaceDot = await c.addCircle(CircleOptions(
+        geometry: at,
+        circleRadius: 7,
+        circleColor: '#E53935',
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: 2,
+        circleOpacity: 1.0,
+      ));
+    } else {
+      await c.updateCircle(_selectedPlaceHalo!, CircleOptions(geometry: at));
+      await c.updateCircle(_selectedPlaceDot!, CircleOptions(geometry: at));
+    }
+  }
+
+  Future<void> _removeSelectedPlaceMarker() async {
+    final MapLibreMapController? c = _controller;
+    if (c != null) {
+      if (_selectedPlaceHalo != null) await c.removeCircle(_selectedPlaceHalo!);
+      if (_selectedPlaceDot != null) await c.removeCircle(_selectedPlaceDot!);
+    }
+    _selectedPlaceHalo = null;
+    _selectedPlaceDot = null;
   }
 
   void _onCoordCardTap() {
     if (_selectedPlace != null) {
       setState(() => _selectedPlace = null);
+      unawaited(_removeSelectedPlaceMarker());
     } else {
       _showTopToast('Long-press to change format');
     }
@@ -291,6 +344,8 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       _mode = MapMode.none;
       _selectedPlace = null;
+      _selectedPlaceHalo = null;
+      _selectedPlaceDot = null;
       _markSymbols.clear();
       _rulerA = null;
       _rulerCircleA = null;

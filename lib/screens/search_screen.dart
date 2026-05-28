@@ -96,13 +96,22 @@ class _SearchScreenState extends State<SearchScreen> {
         _searchResults = results;
         _loading = false;
       });
-    } catch (e) {
+    } catch (_) {
+      final List<Place> cached = await _offline.searchOffline(query);
       if (!mounted || seq != _requestSeq) return;
-      setState(() {
-        _loading = false;
-        _error = 'Search failed. Check your connection.';
-        _searchResults = const <Place>[];
-      });
+      if (cached.isNotEmpty) {
+        setState(() {
+          _searchResults = cached;
+          _loading = false;
+          _error = null;
+        });
+      } else {
+        setState(() {
+          _loading = false;
+          _error = 'Search failed. Check your connection.';
+          _searchResults = const <Place>[];
+        });
+      }
     }
   }
 
@@ -125,6 +134,15 @@ class _SearchScreenState extends State<SearchScreen> {
         place.downloadProgress = 100;
       });
       await _refreshDownloaded();
+      final String? indexErr = _offline.lastIndexError;
+      if (indexErr != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Search index not built: $indexErr'),
+            duration: const Duration(seconds: 8),
+          ),
+        );
+      }
     } on OfflineNotAvailable catch (e) {
       if (!mounted) return;
       setState(() {
