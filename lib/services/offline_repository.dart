@@ -87,12 +87,15 @@ class OfflineRepository {
     _lastIndexError = null;
     _lastPoiSource = PoiSource.none;
     _lastIndexStats = null;
+    _lastRouterError = null;
     try {
+      // OfflineSearchIndex.build() now walks the tiles once and produces both
+      // the POI features table and the road graph. No separate router fetch.
       final IndexBuildStats stats = await _index.build(
         region.id,
         place.bbox,
         onProgress: (double pct) {
-          if (onProgress != null) onProgress(50 + pct * 0.25);
+          if (onProgress != null) onProgress(50 + pct * 0.5);
         },
       );
       _lastPoiSource = stats.source;
@@ -102,19 +105,6 @@ class OfflineRepository {
       // ignore: avoid_print
       print('[OfflineSearchIndex.build] FAILED: $e\n$stack');
       _lastIndexError = '$e';
-    }
-    try {
-      await _router.build(
-        region.id,
-        place.bbox,
-        onProgress: (double pct) {
-          if (onProgress != null) onProgress(75 + pct * 0.25);
-        },
-      );
-    } catch (e, stack) {
-      // ignore: avoid_print
-      print('[OfflineRouter.build] FAILED: $e\n$stack');
-      _lastRouterError = '$e';
     }
     if (onProgress != null) onProgress(100);
     return region;

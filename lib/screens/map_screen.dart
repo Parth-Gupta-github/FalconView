@@ -116,6 +116,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _onSymbolTapped(Symbol s) async {
     _symbolTapConsumed = true;
+    
     final LatLng? at = s.options.geometry;
     final MapLibreMapController? c = _controller;
     if (at == null || c == null) return;

@@ -11,6 +11,7 @@ import 'package:vector_tile/vector_tile.dart';
 
 import '../models/place.dart';
 import '../util/tile_math.dart';
+import 'offline_router.dart';
 
 class OfflineIndexException implements Exception {
   OfflineIndexException(this.message);
@@ -58,8 +59,12 @@ class IndexBuildStats {
 class OfflineSearchIndex {
   OfflineSearchIndex({
     http.Client? client,
+    OfflineRouter? router,
     this._styleUrl = _defaultStyle,
-  }) : _client = client ?? http.Client();
+  })  : _client = client ?? http.Client(),
+        _router = router ?? OfflineRouter();
+
+  final OfflineRouter _router;
 
   static const String _defaultStyle =
       'https://tiles.openfreemap.org/styles/liberty';
@@ -130,27 +135,46 @@ class OfflineSearchIndex {
     final File outFile = await _dbFileFor(regionId);
     if (await outFile.exists()) await outFile.delete();
     final Database outDb = await _openOutDb(outFile);
+    // Same DB also holds the road graph. OfflineRouter owns the schema.
+    await _router.setupTables(outDb);
 
     int inserted = 0;
     int scanned = 0;
+    int roadSegments = 0;
+    final Set<int> seenNodes = <int>{};
+    final Set<int> seenEdges = <int>{};
     try {
       final String tileUrlTemplate = await _resolveTileUrlTemplate();
       final List<_TileKey> tiles = _enumerateTiles(bbox);
       final int total = tiles.length;
       int doneTiles = 0;
 
-      Batch batch = outDb.batch();
-      int pending = 0;
+      Batch poiBatch = outDb.batch();
+      Batch nodeBatch = outDb.batch();
+      Batch edgeBatch = outDb.batch();
+      int poiPending = 0;
+      int nodePending = 0;
+      int edgePending = 0;
       Future<void> flush({bool force = false}) async {
-        if (force || pending >= _chunkSize) {
-          await batch.commit(noResult: true, continueOnError: true);
-          batch = outDb.batch();
-          pending = 0;
+        if (force || poiPending >= _chunkSize) {
+          await poiBatch.commit(noResult: true, continueOnError: true);
+          poiBatch = outDb.batch();
+          poiPending = 0;
+        }
+        if (force || nodePending >= _chunkSize) {
+          await nodeBatch.commit(noResult: true, continueOnError: true);
+          nodeBatch = outDb.batch();
+          nodePending = 0;
+        }
+        if (force || edgePending >= _chunkSize) {
+          await edgeBatch.commit(noResult: true, continueOnError: true);
+          edgeBatch = outDb.batch();
+          edgePending = 0;
         }
       }
 
-      // Fetch tiles in parallel chunks — single-tile serial fetching was the
-      // bottleneck; the CDN happily serves dozens of concurrent requests.
+      // Fetch tiles in parallel chunks; decode POI + road graph from each
+      // tile in the same pass — no duplicate downloads.
       const int concurrency = 8;
       for (int i = 0; i < tiles.length; i += concurrency) {
         final int end =
@@ -174,9 +198,26 @@ class OfflineSearchIndex {
           final Uint8List? bytes = fetched[j];
           if (bytes == null || bytes.isEmpty) continue;
           final _TileKey t = chunk[j];
-          final int added = _extractFromTile(batch, bytes, t.z, t.x, t.y);
+          final int added = _extractFromTile(poiBatch, bytes, t.z, t.x, t.y);
           inserted += added;
-          pending += added;
+          poiPending += added;
+          // Roads are emitted by OpenMapTiles from z13 upward in any useful
+          // density. Skip z12 for routing — its transportation features are
+          // motorways only.
+          if (t.z >= 13) {
+            roadSegments += _router.extractFromTile(
+              bytes: bytes,
+              z: t.z,
+              x: t.x,
+              y: t.y,
+              seenNodes: seenNodes,
+              seenEdges: seenEdges,
+              nodeBatch: nodeBatch,
+              edgeBatch: edgeBatch,
+              addedNodes: (int n) => nodePending += n,
+              addedEdges: (int n) => edgePending += n,
+            );
+          }
         }
         await flush();
         doneTiles += chunk.length;
@@ -184,10 +225,12 @@ class OfflineSearchIndex {
       }
       await flush(force: true);
       debugPrint(
-        'MVT extract: scanned $scanned tiles, inserted $inserted features',
+        'MVT extract: scanned $scanned tiles, '
+        '$inserted POIs, ${seenNodes.length} road nodes, '
+        '$roadSegments road segments',
       );
     } catch (e, s) {
-      debugPrint('MVT POI extract failed: $e\n$s');
+      debugPrint('MVT extract failed: $e\n$s');
     }
 
     await outDb.close();
