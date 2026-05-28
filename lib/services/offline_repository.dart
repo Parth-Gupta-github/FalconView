@@ -1,14 +1,10 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:maplibre_gl/maplibre_gl.dart';
 
-import '../models/offline_poi.dart';
 import '../models/place.dart';
-import 'overpass_service.dart';
-import 'poi_repository.dart';
-import 'subscription_service.dart';
-import 'tile_config.dart';
+import 'offline_search_index.dart';
 
 class OfflineNotAvailable implements Exception {
   final String message;
@@ -18,16 +14,17 @@ class OfflineNotAvailable implements Exception {
 }
 
 class OfflineRepository {
-  OfflineRepository({
-    OverpassService? overpass,
-    PoiRepository? poiRepo,
-  })  : _overpass = overpass ?? OverpassService(),
-        _poiRepo = poiRepo ?? PoiRepository();
+  OfflineRepository({OfflineSearchIndex? index})
+      : _index = index ?? OfflineSearchIndex();
 
+  static const String _styleUrl = 'https://tiles.openfreemap.org/styles/liberty';
+  static const double _minZoom = 10;
+  static const double _maxZoom = 16;
   static const String _metaKey = 'place';
 
-  final OverpassService _overpass;
-  final PoiRepository _poiRepo;
+  final OfflineSearchIndex _index;
+
+  OfflineSearchIndex get index => _index;
 
   Future<OfflineRegion> download(
     Place place, {
@@ -36,12 +33,11 @@ class OfflineRepository {
     if (kIsWeb) {
       throw OfflineNotAvailable('Offline downloads are not supported on web.');
     }
-    final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
     final OfflineRegionDefinition definition = OfflineRegionDefinition(
       bounds: place.bbox,
-      mapStyleUrl: cfg.styleUrl,
-      minZoom: cfg.offlineMinZoom,
-      maxZoom: cfg.offlineMaxZoom,
+      mapStyleUrl: _styleUrl,
+      minZoom: _minZoom,
+      maxZoom: _maxZoom,
     );
     final OfflineRegion region = await downloadOfflineRegion(
       definition,
@@ -50,55 +46,64 @@ class OfflineRepository {
           ? null
           : (DownloadRegionStatus event) {
               if (event is InProgress) {
-                onProgress(event.progress);
+                onProgress(event.progress * 0.7);
               } else if (event is Success) {
-                onProgress(100);
+                onProgress(70);
               }
             },
     );
-
-    // POI prefetch is best-effort. Tile download already succeeded; if
-    // Overpass times out or rate-limits we just skip the POI index for this
-    // region rather than rolling back the tiles.
     try {
-      final List<OfflinePoi> pois = await _overpass.fetchPois(
-        bbox: place.bbox,
-        regionName: place.name,
-        regionId: region.id,
+      await _index.build(
+        region.id,
+        place.bbox,
+        onProgress: (double pct) {
+          if (onProgress != null) onProgress(70 + pct * 0.3);
+        },
       );
-      await _poiRepo.savePoisForRegion(region.id, pois);
-    } catch (e) {
-      debugPrint('POI prefetch failed for region ${region.id}: $e');
+    } catch (e, stack) {
+      // Tiles already downloaded successfully; the index failure shouldn't
+      // fail the whole download. Surface the cause to logs so it's diagnosable.
+      // ignore: avoid_print
+      print('[OfflineSearchIndex.build] FAILED: $e\n$stack');
+      if (onProgress != null) onProgress(100);
+      _lastIndexError = '$e';
     }
-
     return region;
   }
 
+  /// Set when the most recent download's index build threw. Null if the last
+  /// build succeeded or no build has happened.
+  String? _lastIndexError;
+  String? get lastIndexError => _lastIndexError;
+
   Future<List<Place>> listDownloaded() async {
     if (kIsWeb) return const <Place>[];
-    try {
-      final List<OfflineRegion> regions = await getListOfRegions();
-      final List<Place> out = [];
-      for (final OfflineRegion r in regions) {
-        final Place? p = _placeFromRegion(r);
-        if (p != null) out.add(p);
-      }
-      return out;
-    } catch (e, s) {
-      debugPrint('listDownloaded failed: $e\n$s');
-      return const <Place>[];
+    final List<OfflineRegion> regions = await getListOfRegions();
+    final List<Place> out = [];
+    for (final OfflineRegion r in regions) {
+      final Place? p = _placeFromRegion(r);
+      if (p != null) out.add(p);
     }
+    return out;
   }
 
   Future<void> delete(int regionId) async {
     if (kIsWeb) return;
-    try {
-      await deleteOfflineRegion(regionId);
-    } catch (e, s) {
-      debugPrint('deleteOfflineRegion $regionId failed: $e\n$s');
+    await deleteOfflineRegion(regionId);
+    await _index.deleteIndex(regionId);
+  }
+
+  Future<List<Place>> searchOffline(String query, {int limit = 20}) async {
+    if (kIsWeb || query.trim().isEmpty) return const <Place>[];
+    final List<Place> regions = await listDownloaded();
+    final List<Place> hits = <Place>[];
+    for (final Place r in regions) {
+      final int? id = r.regionId;
+      if (id == null) continue;
+      hits.addAll(await _index.search(id, query, limit: limit));
+      if (hits.length >= limit) break;
     }
-    // POI cleanup is independent — try it even if tile delete threw.
-    await _poiRepo.deleteForRegion(regionId);
+    return hits.take(limit).toList();
   }
 
   Place? _placeFromRegion(OfflineRegion r) {
