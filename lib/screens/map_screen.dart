@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:math' show Point;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -108,6 +109,24 @@ class _MapScreenState extends State<MapScreen> {
   void _onMapCreated(MapLibreMapController controller) {
     _controller = controller;
     controller.addListener(_onControllerChanged);
+    controller.onSymbolTapped.add(_onSymbolTapped);
+  }
+  
+  bool _symbolTapConsumed = false;
+
+  Future<void> _onSymbolTapped(Symbol s) async {
+    _symbolTapConsumed = true;
+    final LatLng? at = s.options.geometry;
+    final MapLibreMapController? c = _controller;
+    if (at == null || c == null) return;
+    final CameraPosition? pos = c.cameraPosition;
+    // Stay zoomed-in if already close; otherwise jump to a useful level.
+    final double targetZoom =
+        math.max(pos?.zoom ?? 16, 16.0).toDouble();
+    await c.animateCamera(
+      CameraUpdate.newLatLngZoom(at, targetZoom),
+      duration: const Duration(milliseconds: 400),
+    );
   }
 
   int? _lastToastedZoomLevel;
@@ -132,6 +151,7 @@ class _MapScreenState extends State<MapScreen> {
     _toastEntry?.remove();
     _toastEntry = null;
     _controller?.removeListener(_onControllerChanged);
+    _controller?.onSymbolTapped.remove(_onSymbolTapped);
     subscriptionService.removeListener(_onTierChanged);
     super.dispose();
   }
@@ -443,6 +463,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _onMapClick(Point<double> screenPoint, LatLng coords) async {
+    if (_symbolTapConsumed) {
+      _symbolTapConsumed = false;
+      return;
+    }
     if (_isOverActionPanel(screenPoint)) return;
     switch (_mode) {
       case MapMode.mark:

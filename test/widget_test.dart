@@ -3,8 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:falconview/main.dart';
 
 void main() {
-  testWidgets('FalconMap boots to map screen', (WidgetTester tester) async {
-    await tester.pumpWidget(const FalconMapApp());
+  testWidgets('FalconView boots to map screen', (WidgetTester tester) async {
+    await tester.pumpWidget(const FalconViewApp());
     await tester.pump();
 
     expect(find.text('Search any city or district…'), findsOneWidget);
