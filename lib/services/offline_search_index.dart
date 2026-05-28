@@ -149,26 +149,38 @@ class OfflineSearchIndex {
         }
       }
 
-      for (final _TileKey t in tiles) {
-        scanned++;
-        final String url = tileUrlTemplate
-            .replaceAll('{z}', '${t.z}')
-            .replaceAll('{x}', '${t.x}')
-            .replaceAll('{y}', '${t.y}');
-        try {
-          final Uint8List? bytes = await _fetchTile(url);
+      // Fetch tiles in parallel chunks — single-tile serial fetching was the
+      // bottleneck; the CDN happily serves dozens of concurrent requests.
+      const int concurrency = 8;
+      for (int i = 0; i < tiles.length; i += concurrency) {
+        final int end =
+            (i + concurrency < tiles.length) ? i + concurrency : tiles.length;
+        final List<_TileKey> chunk = tiles.sublist(i, end);
+        final List<Uint8List?> fetched = await Future.wait(chunk.map(
+          (_TileKey t) async {
+            final String url = tileUrlTemplate
+                .replaceAll('{z}', '${t.z}')
+                .replaceAll('{x}', '${t.x}')
+                .replaceAll('{y}', '${t.y}');
+            try {
+              return await _fetchTile(url);
+            } catch (_) {
+              return null;
+            }
+          },
+        ));
+        for (int j = 0; j < chunk.length; j++) {
+          scanned++;
+          final Uint8List? bytes = fetched[j];
           if (bytes == null || bytes.isEmpty) continue;
+          final _TileKey t = chunk[j];
           final int added = _extractFromTile(batch, bytes, t.z, t.x, t.y);
           inserted += added;
           pending += added;
-          await flush();
-        } catch (_) {
-          // skip the bad tile and keep going
         }
-        doneTiles++;
-        if (doneTiles % 25 == 0 && total > 0) {
-          onProgress?.call(doneTiles / total * 95);
-        }
+        await flush();
+        doneTiles += chunk.length;
+        if (total > 0) onProgress?.call(doneTiles / total * 95);
       }
       await flush(force: true);
       debugPrint(

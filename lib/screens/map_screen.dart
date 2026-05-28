@@ -679,14 +679,21 @@ class _MapScreenState extends State<MapScreen> {
     final int seq = ++_routingSeq;
     RouteResult? route;
     bool offline = false;
+    OfflineRouteFailure? offlineFailure;
     try {
       route = await _routing.route(_trackFrom!, dest);
     } catch (_) {
       // Online routing failed — try the offline graph for any downloaded
       // region whose bbox contains the start point.
       try {
-        route = await _offline.routeOffline(_trackFrom!, dest);
-        offline = route != null;
+        final OfflineRouteOutcome outcome =
+            await _offline.routeOffline(_trackFrom!, dest);
+        if (outcome.isSuccess) {
+          route = outcome.route;
+          offline = true;
+        } else {
+          offlineFailure = outcome.failure;
+        }
       } catch (_) {
         route = null;
       }
@@ -694,7 +701,7 @@ class _MapScreenState extends State<MapScreen> {
 
     if (!mounted || seq != _routingSeq || _mode != MapMode.track) return;
     if (route == null) {
-      _showTopToast('No route available (online or offline).', error: true);
+      _showTopToast(_offlineFailureMessage(offlineFailure), error: true);
       return;
     }
 
@@ -711,6 +718,19 @@ class _MapScreenState extends State<MapScreen> {
     if (!mounted) return;
     final String prefix = offline ? 'Offline path' : 'Path';
     _setStatusMessage('$prefix: ${GeoMath.formatDistance(route.distanceMeters)}');
+  }
+
+  String _offlineFailureMessage(OfflineRouteFailure? f) {
+    switch (f) {
+      case OfflineRouteFailure.noRegion:
+        return 'No downloaded region covers your location. Download the area first.';
+      case OfflineRouteFailure.noGraph:
+        return 'Offline road graph not built yet — re-download the region.';
+      case OfflineRouteFailure.noPath:
+        return 'No road path found between those two points.';
+      case null:
+        return 'Routing unavailable. Check your connection.';
+    }
   }
 
   Future<void> _clearTrackOverlay() async {

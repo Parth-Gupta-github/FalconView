@@ -19,6 +19,25 @@ class OfflineNotAvailable implements Exception {
   String toString() => message;
 }
 
+/// Why an offline route lookup failed. `noRegion` = origin is outside every
+/// downloaded bbox. `noGraph` = a region covers the origin but its road
+/// graph was never built (or is empty). `noPath` = graph exists but Dijkstra
+/// found no connected route.
+enum OfflineRouteFailure { noRegion, noGraph, noPath }
+
+/// Result of an offline route lookup — either a `RouteResult` or a typed
+/// reason for failure.
+class OfflineRouteOutcome {
+  final RouteResult? route;
+  final OfflineRouteFailure? failure;
+
+  const OfflineRouteOutcome.success(RouteResult this.route) : failure = null;
+  const OfflineRouteOutcome.failure(OfflineRouteFailure this.failure)
+      : route = null;
+
+  bool get isSuccess => route != null;
+}
+
 class OfflineRepository {
   OfflineRepository({OfflineSearchIndex? index, OfflineRouter? router})
       : _index = index ?? OfflineSearchIndex(),
@@ -165,19 +184,35 @@ class OfflineRepository {
   }
 
   /// Tries each downloaded region whose bbox contains [from] and returns the
-  /// first successful offline route. Returns null when no region covers the
-  /// origin, or no path is found within any covering region.
-  Future<RouteResult?> routeOffline(LatLng from, LatLng to) async {
-    if (kIsWeb) return null;
+  /// first successful offline route, or a typed failure reason if none works.
+  Future<OfflineRouteOutcome> routeOffline(LatLng from, LatLng to) async {
+    if (kIsWeb) {
+      return const OfflineRouteOutcome.failure(OfflineRouteFailure.noRegion);
+    }
     final List<Place> regions = await listDownloaded();
+    if (regions.isEmpty) {
+      return const OfflineRouteOutcome.failure(OfflineRouteFailure.noRegion);
+    }
+    bool anyCovers = false;
+    bool anyHasGraph = false;
     for (final Place r in regions) {
       final int? id = r.regionId;
       if (id == null) continue;
       if (!_bboxContains(r.bbox, from)) continue;
+      anyCovers = true;
+      final bool ready = await _router.hasGraph(id);
+      if (!ready) continue;
+      anyHasGraph = true;
       final RouteResult? result = await _router.route(id, from, to);
-      if (result != null) return result;
+      if (result != null) return OfflineRouteOutcome.success(result);
     }
-    return null;
+    if (!anyCovers) {
+      return const OfflineRouteOutcome.failure(OfflineRouteFailure.noRegion);
+    }
+    if (!anyHasGraph) {
+      return const OfflineRouteOutcome.failure(OfflineRouteFailure.noGraph);
+    }
+    return const OfflineRouteOutcome.failure(OfflineRouteFailure.noPath);
   }
 
   bool _bboxContains(LatLngBounds b, LatLng p) {

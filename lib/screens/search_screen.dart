@@ -8,6 +8,7 @@ import '../services/nominatim_service.dart';
 import '../services/offline_repository.dart';
 import '../services/offline_search_index.dart';
 import '../services/subscription_service.dart';
+import '../util/tile_math.dart';
 import 'plans_screen.dart';
 
 enum SearchTab { search, downloaded }
@@ -325,6 +326,9 @@ class _SearchScreenState extends State<SearchScreen> {
         final PoiSource? src = (!isSearch && id != null)
             ? _poiSourceByRegion[id]
             : null;
+        // Only show size on the Search tab — Downloaded rows are already
+        // on disk so the estimate is no longer actionable there.
+        final String? sizeText = isSearch ? _sizeEstimate(p) : null;
         return ListTile(
           title: Row(
             children: <Widget>[
@@ -332,6 +336,10 @@ class _SearchScreenState extends State<SearchScreen> {
               if (src != null && src != PoiSource.none) ...<Widget>[
                 const SizedBox(width: 8),
                 _PoiSourceChip(source: src),
+              ],
+              if (sizeText != null) ...<Widget>[
+                const SizedBox(width: 8),
+                _SizeChip(text: sizeText),
               ],
             ],
           ),
@@ -415,6 +423,52 @@ class _SearchScreenState extends State<SearchScreen> {
         SnackBar(content: Text('Delete failed: $e')),
       );
     }
+  }
+
+  String _sizeEstimate(Place p) {
+    return TileMath.estimatedDownloadSize(
+      p.bbox.southwest.latitude,
+      p.bbox.southwest.longitude,
+      p.bbox.northeast.latitude,
+      p.bbox.northeast.longitude,
+    );
+  }
+}
+
+class _SizeChip extends StatelessWidget {
+  const _SizeChip({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.blueGrey.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: Colors.blueGrey.shade300.withValues(alpha: 0.6),
+          width: 0.8,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(Icons.sd_storage_outlined, size: 11, color: Colors.blueGrey.shade700),
+          const SizedBox(width: 3),
+          Text(
+            text,
+            style: TextStyle(
+              color: Colors.blueGrey.shade800,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
