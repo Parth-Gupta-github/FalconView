@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../services/nominatim_service.dart';
 import '../services/offline_repository.dart';
+import '../services/subscription_service.dart';
+import 'plans_screen.dart';
 
 enum SearchTab { search, downloaded }
 
@@ -36,6 +39,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void initState() {
     super.initState();
     _refreshDownloaded();
+    subscriptionService.addListener(_onTierChanged);
   }
 
   @override
@@ -43,7 +47,24 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer?.cancel();
     _controller.dispose();
     _nominatim.dispose();
+    subscriptionService.removeListener(_onTierChanged);
     super.dispose();
+  }
+
+  void _onTierChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _promptUpgrade() async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Offline download is a Pro feature.'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const PlansScreen()),
+    );
   }
 
   Future<void> _refreshDownloaded() async {
@@ -97,21 +118,28 @@ class _SearchScreenState extends State<SearchScreen> {
         _loading = false;
       });
     } catch (_) {
-      final List<Place> cached = await _offline.searchOffline(query);
-      if (!mounted || seq != _requestSeq) return;
-      if (cached.isNotEmpty) {
-        setState(() {
-          _searchResults = cached;
-          _loading = false;
-          _error = null;
-        });
-      } else {
-        setState(() {
-          _loading = false;
-          _error = 'Search failed. Check your connection.';
-          _searchResults = const <Place>[];
-        });
+      // Offline POI fallback only kicks in for Pro — Free users see the
+      // plain network-failed message and can upgrade via the Plans screen.
+      if (subscriptionService.tier == AppTier.pro) {
+        final List<Place> cached = await _offline.searchOffline(query);
+        if (!mounted || seq != _requestSeq) return;
+        if (cached.isNotEmpty) {
+          setState(() {
+            _searchResults = cached;
+            _loading = false;
+            _error = null;
+          });
+          return;
+        }
       }
+      if (!mounted || seq != _requestSeq) return;
+      setState(() {
+        _loading = false;
+        _error = subscriptionService.tier == AppTier.pro
+            ? 'Search failed and no offline matches in downloaded regions.'
+            : 'Search failed. Check your connection.';
+        _searchResults = const <Place>[];
+      });
     }
   }
 
@@ -279,8 +307,16 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildTrailing(Place place, bool isSearch) {
     if (isSearch) {
+      final bool isPro = subscriptionService.tier == AppTier.pro;
       switch (place.state) {
         case PlaceDownloadState.none:
+          if (!isPro) {
+            return IconButton(
+              tooltip: 'Offline download is a Pro feature',
+              icon: const Icon(Icons.lock_outline),
+              onPressed: _promptUpgrade,
+            );
+          }
           return IconButton(
             icon: const Icon(Icons.download_outlined),
             onPressed: () => _onDownloadTap(place),

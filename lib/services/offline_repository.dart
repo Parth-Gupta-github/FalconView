@@ -3,8 +3,11 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:maplibre_gl/maplibre_gl.dart';
 
+import '../models/app_tier.dart';
 import '../models/place.dart';
 import 'offline_search_index.dart';
+import 'subscription_service.dart';
+import 'tile_config.dart';
 
 class OfflineNotAvailable implements Exception {
   final String message;
@@ -17,9 +20,6 @@ class OfflineRepository {
   OfflineRepository({OfflineSearchIndex? index})
       : _index = index ?? OfflineSearchIndex();
 
-  static const String _styleUrl = 'https://tiles.openfreemap.org/styles/liberty';
-  static const double _minZoom = 10;
-  static const double _maxZoom = 16;
   static const String _metaKey = 'place';
 
   final OfflineSearchIndex _index;
@@ -33,11 +33,17 @@ class OfflineRepository {
     if (kIsWeb) {
       throw OfflineNotAvailable('Offline downloads are not supported on web.');
     }
+    if (subscriptionService.tier != AppTier.pro) {
+      throw OfflineNotAvailable(
+        'Offline download is a Pro feature. Upgrade in Plans to enable it.',
+      );
+    }
+    final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
     final OfflineRegionDefinition definition = OfflineRegionDefinition(
       bounds: place.bbox,
-      mapStyleUrl: _styleUrl,
-      minZoom: _minZoom,
-      maxZoom: _maxZoom,
+      mapStyleUrl: cfg.styleUrl,
+      minZoom: cfg.offlineMinZoom,
+      maxZoom: cfg.offlineMaxZoom,
     );
     final OfflineRegion region = await downloadOfflineRegion(
       definition,
