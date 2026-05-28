@@ -15,6 +15,24 @@ class OfflineSearchIndex {
   static const String _userAgent = 'FalconView/1.0 (contact: parvtiwari1@gmail.com)';
 
   final http.Client _client;
+  // Read-only handles kept open for the lifetime of the service. Opening a
+  // 30 MB SQLite file is 150–300 ms; doing it on every keystroke is what was
+  // making the search feel sluggish after the router was added.
+  final Map<int, Database> _readDbCache = <int, Database>{};
+
+  Future<Database> _openForRead(int regionId) async {
+    final Database? cached = _readDbCache[regionId];
+    if (cached != null && cached.isOpen) return cached;
+    final File file = await _dbFileFor(regionId);
+    final Database db = await openDatabase(file.path, readOnly: true);
+    _readDbCache[regionId] = db;
+    return db;
+  }
+
+  Future<void> _evict(int regionId) async {
+    final Database? db = _readDbCache.remove(regionId);
+    if (db != null && db.isOpen) await db.close();
+  }
 
   Future<File> _dbFileFor(int regionId) async {
     final Directory docs = await getApplicationDocumentsDirectory();
@@ -29,6 +47,7 @@ class OfflineSearchIndex {
   }
 
   Future<void> deleteIndex(int regionId) async {
+    await _evict(regionId);
     final File f = await _dbFileFor(regionId);
     if (await f.exists()) await f.delete();
   }
@@ -39,6 +58,7 @@ class OfflineSearchIndex {
     void Function(double percent)? onProgress,
   }) async {
     onProgress?.call(0);
+    await _evict(regionId);
     final String s = bbox.southwest.latitude.toString();
     final String w = bbox.southwest.longitude.toString();
     final String n = bbox.northeast.latitude.toString();
@@ -99,11 +119,20 @@ out tags center;
       },
     );
 
-    final Batch batch = db.batch();
+    const int chunkSize = 2000;
+    Batch batch = db.batch();
+    int pending = 0;
     int inserted = 0;
     const List<String> nameKeys = <String>[
       'name', 'alt_name', 'short_name', 'loc_name', 'name:en', 'official_name', 'nat_name', 'reg_name'
     ];
+    Future<void> flush({bool force = false}) async {
+      if (force || pending >= chunkSize) {
+        await batch.commit(noResult: true, continueOnError: true);
+        batch = db.batch();
+        pending = 0;
+      }
+    }
     for (final dynamic el in elements) {
       if (el is! Map) continue;
       final Map<String, dynamic> m = el.cast<String, dynamic>();
@@ -138,10 +167,12 @@ out tags center;
           'lat': lat,
           'lon': lon,
         });
+        pending++;
         inserted++;
       }
+      await flush();
     }
-    await batch.commit(noResult: true);
+    await flush(force: true);
     await db.close();
     onProgress?.call(100);
     if (inserted == 0) {
@@ -158,7 +189,7 @@ out tags center;
     final String safe = q.replaceAll('%', ' ').replaceAll('_', ' ').trim();
     if (safe.isEmpty) return const <Place>[];
 
-    final Database db = await openDatabase(file.path, readOnly: true);
+    final Database db = await _openForRead(regionId);
     // Two patterns: "starts with safe" (uses the index for fast prefix scan),
     // and "any word starts with safe" (catches "road" in "MG Road").
     final List<Map<String, dynamic>> rows = await db.rawQuery(
@@ -169,7 +200,6 @@ out tags center;
       ''',
       <Object?>['$safe%', '% $safe%', limit],
     );
-    await db.close();
     return rows
         .map((Map<String, dynamic> r) => Place(
               name: r['name'] as String,
@@ -206,7 +236,13 @@ out tags center;
     );
   }
 
-  void dispose() => _client.close();
+  Future<void> dispose() async {
+    _client.close();
+    for (final Database db in _readDbCache.values) {
+      if (db.isOpen) await db.close();
+    }
+    _readDbCache.clear();
+  }
 }
 
 class OfflineIndexException implements Exception {

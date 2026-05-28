@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../services/location_service.dart';
+import '../services/offline_repository.dart';
 import '../services/routing_service.dart';
 import '../services/subscription_service.dart';
 import '../services/tile_config.dart';
@@ -88,6 +89,7 @@ class _MapScreenState extends State<MapScreen> {
   Circle? _trackFromCircle;
   Circle? _trackToCircle;
   final RoutingService _routing = RoutingService();
+  final OfflineRepository _offline = OfflineRepository();
   int _routingSeq = 0;
 
   Circle? _gpsHalo;
@@ -644,28 +646,40 @@ class _MapScreenState extends State<MapScreen> {
 
     _showTopToast('Routing…');
     final int seq = ++_routingSeq;
+    RouteResult? route;
+    bool offline = false;
     try {
-      final RouteResult route = await _routing.route(_trackFrom!, dest);
-      if (!mounted || seq != _routingSeq || _mode != MapMode.track) return;
-      if (_trackLine == null) {
-        _trackLine = await c.addLine(LineOptions(
-          geometry: route.geometry,
-          lineColor: '#00C853',
-          lineWidth: 4.0,
-          lineOpacity: 0.9,
-        ));
-      } else {
-        await c.updateLine(_trackLine!, LineOptions(geometry: route.geometry));
+      route = await _routing.route(_trackFrom!, dest);
+    } catch (_) {
+      // Online routing failed — try the offline graph for any downloaded
+      // region whose bbox contains the start point.
+      try {
+        route = await _offline.routeOffline(_trackFrom!, dest);
+        offline = route != null;
+      } catch (_) {
+        route = null;
       }
-      if (!mounted) return;
-      _setStatusMessage('Path: ${GeoMath.formatDistance(route.distanceMeters)}');
-    } on RoutingException catch (e) {
-      if (!mounted || seq != _routingSeq) return;
-      _showTopToast(e.message, error: true);
-    } catch (e) {
-      if (!mounted || seq != _routingSeq) return;
-      _showTopToast('Routing failed: $e', error: true);
     }
+
+    if (!mounted || seq != _routingSeq || _mode != MapMode.track) return;
+    if (route == null) {
+      _showTopToast('No route available (online or offline).', error: true);
+      return;
+    }
+
+    if (_trackLine == null) {
+      _trackLine = await c.addLine(LineOptions(
+        geometry: route.geometry,
+        lineColor: '#00C853',
+        lineWidth: 4.0,
+        lineOpacity: 0.9,
+      ));
+    } else {
+      await c.updateLine(_trackLine!, LineOptions(geometry: route.geometry));
+    }
+    if (!mounted) return;
+    final String prefix = offline ? 'Offline path' : 'Path';
+    _setStatusMessage('$prefix: ${GeoMath.formatDistance(route.distanceMeters)}');
   }
 
   Future<void> _clearTrackOverlay() async {
