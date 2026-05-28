@@ -8,9 +8,12 @@ import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../services/location_service.dart';
 import '../services/routing_service.dart';
+import '../services/subscription_service.dart';
+import '../services/tile_config.dart';
 import '../util/coordinate_formatter.dart';
 import '../util/geo_math.dart';
 import '../widgets/action_panel.dart';
@@ -18,9 +21,9 @@ import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
 import '../theme/tactical_theme.dart';
 import '../widgets/search_card.dart';
+import 'plans_screen.dart';
 import 'search_screen.dart';
 
-const String _kLibertyStyle = 'https://tiles.openfreemap.org/styles/liberty';
 const LatLng _kInitialCenter = LatLng(22.7196, 75.8577);
 const double _kInitialZoom = 11;
 const String _kCoordFormatPrefKey = 'coord_format';
@@ -51,6 +54,11 @@ class _MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     _loadCoordFormat();
+    subscriptionService.addListener(_onTierChanged);
+  }
+
+  void _onTierChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadCoordFormat() async {
@@ -119,6 +127,7 @@ class _MapScreenState extends State<MapScreen> {
     _toastEntry?.remove();
     _toastEntry = null;
     _controller?.removeListener(_onControllerChanged);
+    subscriptionService.removeListener(_onTierChanged);
     super.dispose();
   }
 
@@ -619,16 +628,18 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
           MapLibreMap(
-            styleString: _kLibertyStyle,
+            styleString: cfg.styleUrl,
             initialCameraPosition: const CameraPosition(
               target: _kInitialCenter,
               zoom: _kInitialZoom,
             ),
+            minMaxZoomPreference: MinMaxZoomPreference(0, cfg.interactiveMaxZoom),
             onMapCreated: _onMapCreated,
             onStyleLoadedCallback: _registerMarkPin,
             onMapClick: _onMapClick,
@@ -648,17 +659,21 @@ class _MapScreenState extends State<MapScreen> {
                 children: [
                   SearchCard(onTap: _openSearch),
                   const SizedBox(height: 10),
-                  Align(
-                    alignment: Alignment.topLeft,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 260),
-                      child: CoordCard(
-                        coordsText: _formatCoords(_mapCenter),
-                        distanceBearingText: _distanceBearingLine(),
-                        onTap: _onCoordCardTap,
-                        onLongPress: _onCoordCardLongPress,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 260),
+                        child: CoordCard(
+                          coordsText: _formatCoords(_mapCenter),
+                          distanceBearingText: _distanceBearingLine(),
+                          onTap: _onCoordCardTap,
+                          onLongPress: _onCoordCardLongPress,
+                        ),
                       ),
-                    ),
+                      const Spacer(),
+                      const _TierPill(),
+                    ],
                   ),
                   if (_statusMessage != null) ...[
                     const SizedBox(height: 8),
@@ -706,6 +721,54 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _TierPill extends StatelessWidget {
+  const _TierPill();
+
+  @override
+  Widget build(BuildContext context) {
+    final AppTier tier = subscriptionService.tier;
+    final bool isPro = tier == AppTier.pro;
+    final Color bg = isPro ? TacticalPalette.accent : TacticalPalette.panel;
+    final Color fg = isPro ? Colors.white : TacticalPalette.accent;
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const PlansScreen()),
+        ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: TacticalPalette.accent, width: 1),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isPro ? Icons.workspace_premium : Icons.lock_open,
+                size: 14,
+                color: fg,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                tier.label.toUpperCase(),
+                style: TextStyle(
+                  color: fg,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

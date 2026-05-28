@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../services/nominatim_service.dart';
+import '../services/offline_geocoder.dart';
 import '../services/offline_repository.dart';
+import '../services/subscription_service.dart';
 
 enum SearchTab { search, downloaded }
 
@@ -17,11 +20,14 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   static const Duration _debounce = Duration(milliseconds: 350);
+  static const Duration _offlineDebounce = Duration(milliseconds: 180);
 
   SearchTab _tab = SearchTab.search;
   final TextEditingController _controller = TextEditingController();
   final NominatimService _nominatim = NominatimService();
   final OfflineRepository _offline = OfflineRepository();
+  final OfflineGeocoder _offlineGeocoder = OfflineGeocoder();
+  bool _lastSearchWasOffline = false;
 
   Timer? _debounceTimer;
   int _requestSeq = 0;
@@ -31,6 +37,9 @@ class _SearchScreenState extends State<SearchScreen> {
 
   List<Place> _downloadedResults = const <Place>[];
   bool _downloadedLoading = true;
+
+  List<Place> _downloadedSearchResults = const <Place>[];
+  bool _downloadedSearchLoading = false;
 
   @override
   void initState() {
@@ -69,6 +78,14 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer?.cancel();
     final String q = value.trim();
     if (_tab == SearchTab.downloaded) {
+      if (q.isEmpty) {
+        setState(() {
+          _downloadedSearchResults = const <Place>[];
+          _downloadedSearchLoading = false;
+        });
+      } else {
+        _debounceTimer = Timer(_offlineDebounce, () => _runDownloadedSearch(q));
+      }
       setState(() {});
       return;
     }
@@ -83,11 +100,31 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer = Timer(_debounce, () => _runSearch(q));
   }
 
+  Future<void> _runDownloadedSearch(String query) async {
+    final int seq = ++_requestSeq;
+    setState(() => _downloadedSearchLoading = true);
+    try {
+      final List<Place> results = await _offlineGeocoder.search(query);
+      if (!mounted || seq != _requestSeq) return;
+      setState(() {
+        _downloadedSearchResults = results;
+        _downloadedSearchLoading = false;
+      });
+    } catch (_) {
+      if (!mounted || seq != _requestSeq) return;
+      setState(() {
+        _downloadedSearchResults = const <Place>[];
+        _downloadedSearchLoading = false;
+      });
+    }
+  }
+
   Future<void> _runSearch(String query) async {
     final int seq = ++_requestSeq;
     setState(() {
       _loading = true;
       _error = null;
+      _lastSearchWasOffline = false;
     });
     try {
       final List<Place> results = await _nominatim.search(query);
@@ -96,11 +133,31 @@ class _SearchScreenState extends State<SearchScreen> {
         _searchResults = results;
         _loading = false;
       });
-    } catch (e) {
+    } catch (_) {
+      // Network failure → on Pro, fall back to offline geocoder.
+      if (subscriptionService.tier.hasOfflineGeocoding) {
+        try {
+          final List<Place> offline = await _offlineGeocoder.search(query);
+          if (!mounted || seq != _requestSeq) return;
+          setState(() {
+            _searchResults = offline;
+            _loading = false;
+            _lastSearchWasOffline = true;
+            _error = offline.isEmpty
+                ? 'No matches in downloaded regions.'
+                : null;
+          });
+          return;
+        } catch (_) {
+          // fall through to the network error path below
+        }
+      }
       if (!mounted || seq != _requestSeq) return;
       setState(() {
         _loading = false;
-        _error = 'Search failed. Check your connection.';
+        _error = subscriptionService.tier.hasOfflineGeocoding
+            ? 'Search failed and no offline matches.'
+            : 'Search failed. Check your connection.';
         _searchResults = const <Place>[];
       });
     }
@@ -149,7 +206,6 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final bool isSearch = _tab == SearchTab.search;
-    final List<Place> rows = isSearch ? _searchResults : _downloadedResults;
     final bool hasQuery = _controller.text.trim().isNotEmpty;
 
     return Scaffold(
@@ -186,7 +242,9 @@ class _SearchScreenState extends State<SearchScreen> {
               autofocus: isSearch,
               textInputAction: TextInputAction.search,
               decoration: InputDecoration(
-                hintText: isSearch ? 'Search any city or district' : 'Filter your downloads',
+                hintText: isSearch
+                    ? 'Search any city or district'
+                    : 'Search downloads — try "hospital"',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: hasQuery
                     ? IconButton(
@@ -205,14 +263,24 @@ class _SearchScreenState extends State<SearchScreen> {
               onChanged: _onQueryChanged,
             ),
           ),
+          if (isSearch && _lastSearchWasOffline && _searchResults.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              color: Colors.amber.shade100,
+              child: const Text(
+                'Offline matches from your downloaded regions',
+                style: TextStyle(fontSize: 12, color: Colors.black87),
+              ),
+            ),
           const Divider(height: 1),
-          Expanded(child: _buildBody(isSearch, rows, hasQuery)),
+          Expanded(child: _buildBody(isSearch, hasQuery)),
         ],
       ),
     );
   }
 
-  Widget _buildBody(bool isSearch, List<Place> rows, bool hasQuery) {
+  Widget _buildBody(bool isSearch, bool hasQuery) {
     if (isSearch) {
       if (_loading) {
         return const Center(child: CircularProgressIndicator());
@@ -230,36 +298,57 @@ class _SearchScreenState extends State<SearchScreen> {
           child: Text('Type to search places', style: TextStyle(color: Colors.black54)),
         );
       }
-    } else if (_downloadedLoading) {
+      return _buildList(_searchResults, isSearch: true);
+    }
+
+    // Downloaded tab
+    if (_downloadedLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-    final List<Place> visible = (!isSearch && hasQuery)
-        ? rows.where((p) => p.name.toLowerCase().contains(_controller.text.trim().toLowerCase())).toList()
-        : rows;
-    if (visible.isEmpty) {
-      return Center(
+    if (!hasQuery) {
+      if (_downloadedResults.isEmpty) {
+        return const Center(
+          child: Text('No offline regions yet', style: TextStyle(color: Colors.black54)),
+        );
+      }
+      return _buildList(_downloadedResults, isSearch: false);
+    }
+    // hasQuery on downloaded tab → offline POI + region search
+    if (_downloadedSearchLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_downloadedSearchResults.isEmpty) {
+      return const Center(
         child: Text(
-          isSearch ? 'No results' : 'No offline regions yet',
-          style: const TextStyle(color: Colors.black54),
+          'No matches in your downloads.',
+          style: TextStyle(color: Colors.black54),
         ),
       );
     }
+    return _buildList(_downloadedSearchResults, isSearch: false);
+  }
+
+  Widget _buildList(List<Place> rows, {required bool isSearch}) {
     return ListView.separated(
-      itemCount: visible.length,
+      itemCount: rows.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
-        final Place p = visible[index];
+        final Place p = rows[index];
+        final bool isPoi = !isSearch && p.regionId == null;
         return ListTile(
+          leading: isPoi
+              ? const Icon(Icons.place_outlined, color: Colors.black54)
+              : null,
           title: Text(p.name),
           subtitle: Text(p.subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
-          trailing: _buildTrailing(p, isSearch),
+          trailing: _buildTrailing(p, isSearch: isSearch, isPoi: isPoi),
           onTap: () => Navigator.of(context).pop(p),
         );
       },
     );
   }
 
-  Widget _buildTrailing(Place place, bool isSearch) {
+  Widget? _buildTrailing(Place place, {required bool isSearch, required bool isPoi}) {
     if (isSearch) {
       switch (place.state) {
         case PlaceDownloadState.none:
@@ -292,6 +381,9 @@ class _SearchScreenState extends State<SearchScreen> {
         case PlaceDownloadState.downloaded:
           return const Icon(Icons.check, color: Colors.green);
       }
+    }
+    if (isPoi) {
+      return const Icon(Icons.north_east, color: Colors.black38, size: 18);
     }
     return IconButton(
       icon: const Icon(Icons.delete_outline),

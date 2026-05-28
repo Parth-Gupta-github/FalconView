@@ -17,6 +17,7 @@ class NominatimService {
 
   static const String _endpoint = 'https://nominatim.openstreetmap.org/search';
   static const String _userAgent = 'FalconView/1.0 (contact: tarun@igismap.com)';
+  static const Duration _timeout = Duration(seconds: 8);
 
   final http.Client _client;
 
@@ -35,7 +36,7 @@ class NominatimService {
       'User-Agent': _userAgent,
       'Accept': 'application/json',
       'Accept-Language': 'en',
-    });
+    }).timeout(_timeout);
 
     if (res.statusCode != 200) {
       throw NominatimException('Search failed (${res.statusCode})');
