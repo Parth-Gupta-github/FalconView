@@ -6,6 +6,7 @@ import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../services/nominatim_service.dart';
 import '../services/offline_repository.dart';
+import '../services/offline_search_index.dart';
 import '../services/subscription_service.dart';
 import 'plans_screen.dart';
 
@@ -34,6 +35,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
   List<Place> _downloadedResults = const <Place>[];
   bool _downloadedLoading = true;
+  Map<int, PoiSource> _poiSourceByRegion = const <int, PoiSource>{};
 
   @override
   void initState() {
@@ -72,15 +74,23 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() => _downloadedLoading = true);
     try {
       final List<Place> list = await _offline.listDownloaded();
+      final Map<int, PoiSource> sources = <int, PoiSource>{};
+      for (final Place p in list) {
+        final int? id = p.regionId;
+        if (id == null) continue;
+        sources[id] = await _offline.poiSourceFor(id);
+      }
       if (!mounted) return;
       setState(() {
         _downloadedResults = list;
+        _poiSourceByRegion = sources;
         _downloadedLoading = false;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _downloadedResults = const <Place>[];
+        _poiSourceByRegion = const <int, PoiSource>{};
         _downloadedLoading = false;
       });
     }
@@ -162,12 +172,28 @@ class _SearchScreenState extends State<SearchScreen> {
         place.downloadProgress = 100;
       });
       await _refreshDownloaded();
+      if (!mounted) return;
       final String? indexErr = _offline.lastIndexError;
-      if (indexErr != null && mounted) {
+      if (indexErr != null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Search index not built: $indexErr'),
             duration: const Duration(seconds: 8),
+          ),
+        );
+      } else {
+        final PoiSource src = _offline.lastPoiSource;
+        final IndexBuildStats? stats = _offline.lastIndexStats;
+        final String tail = stats == null
+            ? ''
+            : ' (${stats.tilesScanned} tiles → ${stats.poisInserted} POIs)';
+        final String origin = src == PoiSource.mvt
+            ? 'POIs extracted from MBTiles$tail'
+            : 'No POIs indexed for this region$tail';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${place.name}: $origin'),
+            duration: const Duration(seconds: 6),
           ),
         );
       }
@@ -295,8 +321,20 @@ class _SearchScreenState extends State<SearchScreen> {
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final Place p = visible[index];
+        final int? id = p.regionId;
+        final PoiSource? src = (!isSearch && id != null)
+            ? _poiSourceByRegion[id]
+            : null;
         return ListTile(
-          title: Text(p.name),
+          title: Row(
+            children: <Widget>[
+              Flexible(child: Text(p.name, overflow: TextOverflow.ellipsis)),
+              if (src != null && src != PoiSource.none) ...<Widget>[
+                const SizedBox(width: 8),
+                _PoiSourceChip(source: src),
+              ],
+            ],
+          ),
           subtitle: Text(p.subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
           trailing: _buildTrailing(p, isSearch),
           onTap: () => Navigator.of(context).pop(p),
@@ -377,5 +415,44 @@ class _SearchScreenState extends State<SearchScreen> {
         SnackBar(content: Text('Delete failed: $e')),
       );
     }
+  }
+}
+
+class _PoiSourceChip extends StatelessWidget {
+  const _PoiSourceChip({required this.source});
+
+  final PoiSource source;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isMvt = source == PoiSource.mvt;
+    final Color bg = isMvt ? Colors.green.shade50 : Colors.amber.shade50;
+    final Color fg = isMvt ? Colors.green.shade800 : Colors.amber.shade900;
+    final IconData icon =
+        isMvt ? Icons.layers_outlined : Icons.cloud_download_outlined;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: fg.withValues(alpha: 0.4), width: 0.8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 11, color: fg),
+          const SizedBox(width: 3),
+          Text(
+            source.label,
+            style: TextStyle(
+              color: fg,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

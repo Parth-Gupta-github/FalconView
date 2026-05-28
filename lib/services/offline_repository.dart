@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
@@ -24,6 +25,7 @@ class OfflineRepository {
         _router = router ?? OfflineRouter();
 
   static const String _metaKey = 'place';
+  static const String _poiSourcePrefix = 'poi_source_';
 
   final OfflineSearchIndex _index;
   final OfflineRouter _router;
@@ -63,14 +65,20 @@ class OfflineRepository {
               }
             },
     );
+    _lastIndexError = null;
+    _lastPoiSource = PoiSource.none;
+    _lastIndexStats = null;
     try {
-      await _index.build(
+      final IndexBuildStats stats = await _index.build(
         region.id,
         place.bbox,
         onProgress: (double pct) {
           if (onProgress != null) onProgress(50 + pct * 0.25);
         },
       );
+      _lastPoiSource = stats.source;
+      _lastIndexStats = stats;
+      await _persistPoiSource(region.id, stats.source);
     } catch (e, stack) {
       // ignore: avoid_print
       print('[OfflineSearchIndex.build] FAILED: $e\n$stack');
@@ -101,6 +109,40 @@ class OfflineRepository {
   String? _lastRouterError;
   String? get lastRouterError => _lastRouterError;
 
+  /// Which strategy populated the most recently built index.
+  PoiSource _lastPoiSource = PoiSource.none;
+  PoiSource get lastPoiSource => _lastPoiSource;
+
+  /// Tile-scan + POI-insert counts from the most recent index build. Null if
+  /// the index step failed before completing.
+  IndexBuildStats? _lastIndexStats;
+  IndexBuildStats? get lastIndexStats => _lastIndexStats;
+
+  Future<void> _persistPoiSource(int regionId, PoiSource source) async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setString('$_poiSourcePrefix$regionId', source.name);
+    } catch (_) {
+      // Persistence failure shouldn't break the download flow.
+    }
+  }
+
+  /// Returns the persisted POI source for a downloaded region, or
+  /// `PoiSource.none` if nothing was recorded (older download or wiped state).
+  Future<PoiSource> poiSourceFor(int regionId) async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final String? raw = prefs.getString('$_poiSourcePrefix$regionId');
+      if (raw == null) return PoiSource.none;
+      return PoiSource.values.firstWhere(
+        (PoiSource s) => s.name == raw,
+        orElse: () => PoiSource.none,
+      );
+    } catch (_) {
+      return PoiSource.none;
+    }
+  }
+
   Future<List<Place>> listDownloaded() async {
     if (kIsWeb) return const <Place>[];
     final List<OfflineRegion> regions = await getListOfRegions();
@@ -116,6 +158,10 @@ class OfflineRepository {
     if (kIsWeb) return;
     await deleteOfflineRegion(regionId);
     await _index.deleteIndex(regionId);
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.remove('$_poiSourcePrefix$regionId');
+    } catch (_) {}
   }
 
   /// Tries each downloaded region whose bbox contains [from] and returns the
