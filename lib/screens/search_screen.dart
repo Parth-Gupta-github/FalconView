@@ -125,7 +125,7 @@ class _SearchScreenState extends State<SearchScreen> {
       final List<Place> results = await _nominatim.search(query);
       if (!mounted || seq != _requestSeq) return;
       setState(() {
-        _searchResults = results;
+        _searchResults = _withCuratedAggregate(query, results);
         _loading = false;
       });
     } catch (_) {
@@ -423,6 +423,47 @@ class _SearchScreenState extends State<SearchScreen> {
         SnackBar(content: Text('Delete failed: $e')),
       );
     }
+  }
+
+  // Pin a synthetic whole-country Place on top of Nominatim's results when
+  // the query is a country alias (currently only US). State/city rows from
+  // Nominatim continue to appear below it; any Nominatim row that *is* the
+  // same whole country is suppressed to avoid a visible duplicate.
+  List<Place> _withCuratedAggregate(String query, List<Place> base) {
+    final Place? curated = _curatedAggregateFor(query);
+    if (curated == null) return base;
+    final List<Place> filtered = base.where((Place p) {
+      final String n = p.name.trim().toLowerCase();
+      return n != 'united states' && n != 'united states of america';
+    }).toList();
+    return <Place>[curated, ...filtered];
+  }
+
+  static Place? _curatedAggregateFor(String query) {
+    final String q = query.trim().toLowerCase();
+    const Set<String> usAliases = <String>{
+      'us',
+      'usa',
+      'u.s.',
+      'u.s.a.',
+      'united states',
+      'united states of america',
+    };
+    if (usAliases.contains(q)) {
+      // CONUS + Alaska + Hawaii. West edge clamped to -180 (Aleutians cross
+      // the antimeridian; the sliver east of it is excluded by design to
+      // keep the bbox a single rectangle).
+      return Place(
+        name: 'United States',
+        subtitle: 'Whole-country offline pack (CONUS + Alaska + Hawaii)',
+        center: const LatLng(39.5, -98.35),
+        bbox: LatLngBounds(
+          southwest: const LatLng(18.0, -180.0),
+          northeast: const LatLng(72.0, -66.0),
+        ),
+      );
+    }
+    return null;
   }
 
   String _sizeEstimate(Place p) {
