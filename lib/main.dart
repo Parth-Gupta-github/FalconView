@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'screens/map_screen.dart';
 import 'services/subscription_service.dart';
@@ -14,6 +16,14 @@ void main() {
   runZonedGuarded<Future<void>>(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+
+      // On Windows/Linux desktop, the sqflite plugin doesn't ship a native
+      // implementation — we have to wire up the FFI variant explicitly.
+      // No-op on Android/iOS (their native sqflite plugin handles itself).
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
+        sqfliteFfiInit();
+        databaseFactory = databaseFactoryFfi;
+      }
 
       // Widget-tree errors → log only, no red screen on release.
       FlutterError.onError = (FlutterErrorDetails details) {
@@ -27,16 +37,18 @@ void main() {
       };
 
       try {
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-        SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-          statusBarColor: Colors.transparent,
-          statusBarIconBrightness: Brightness.dark,
-          statusBarBrightness: Brightness.light,
-          systemNavigationBarColor: Colors.transparent,
-          systemNavigationBarIconBrightness: Brightness.dark,
-          systemNavigationBarDividerColor: Colors.transparent,
-          systemNavigationBarContrastEnforced: false,
-        ));
+        if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+          SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.dark,
+            statusBarBrightness: Brightness.light,
+            systemNavigationBarColor: Colors.transparent,
+            systemNavigationBarIconBrightness: Brightness.dark,
+            systemNavigationBarDividerColor: Colors.transparent,
+            systemNavigationBarContrastEnforced: false,
+          ));
+        }
       } catch (e, s) {
         debugPrint('System UI configuration failed: $e\n$s');
       }
