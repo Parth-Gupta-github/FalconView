@@ -52,11 +52,29 @@ class _MapScreenState extends State<MapScreen> {
   LatLng? _currentGps;
   CoordinateFormat _coordFormat = CoordinateFormat.decimal;
 
+  // Inline JSON of the bundled Google-Maps-like style, loaded from assets in
+  // initState. Null while loading — MapScreen falls back to the upstream URL
+  // for the very first frame so the map isn't blank.
+  String? _renderStyleJson;
+
   @override
   void initState() {
     super.initState();
     _loadCoordFormat();
+    _loadRenderStyle();
     subscriptionService.addListener(_onTierChanged);
+  }
+
+  Future<void> _loadRenderStyle() async {
+    try {
+      final String s =
+          await TileConfig.forTier(subscriptionService.tier).loadRenderStyle();
+      if (!mounted) return;
+      setState(() => _renderStyleJson = s);
+    } catch (e) {
+      // Asset missing → fall through to the upstream URL.
+      debugPrint('Failed to load bundled style: $e');
+    }
   }
 
   void _onTierChanged() {
@@ -755,7 +773,7 @@ class _MapScreenState extends State<MapScreen> {
         fit: StackFit.expand,
         children: [
           MapLibreMap(
-            styleString: cfg.styleUrl,
+            styleString: _renderStyleJson ?? cfg.styleUrl,
             initialCameraPosition: const CameraPosition(
               target: _kInitialCenter,
               zoom: _kInitialZoom,
