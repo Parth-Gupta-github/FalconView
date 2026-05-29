@@ -4,6 +4,7 @@ import '../models/app_tier.dart';
 import '../services/subscription_service.dart';
 import '../services/tile_config.dart';
 import '../theme/tactical_theme.dart';
+import 'payment_screen.dart';
 
 class PlansScreen extends StatefulWidget {
   const PlansScreen({super.key});
@@ -30,10 +31,29 @@ class _PlansScreenState extends State<PlansScreen> {
   }
 
   Future<void> _selectTier(AppTier tier) async {
+    // Free → Pro routes through the dev-mode payment page. Pro → Free is an
+    // instant downgrade (no refund flow needed in dev). Same-tier taps are
+    // already short-circuited by the tile's onTap guard.
+    if (tier == AppTier.pro && subscriptionService.tier != AppTier.pro) {
+      final bool? paid = await Navigator.of(context).push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => const PaymentScreen(tier: AppTier.pro),
+        ),
+      );
+      if (!mounted) return;
+      if (paid == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Welcome to Pro — offline tools unlocked'),
+          ),
+        );
+      }
+      return;
+    }
     await subscriptionService.setTier(tier);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${tier.label} plan enabled for testing')),
+      SnackBar(content: Text('${tier.label} plan enabled')),
     );
   }
 
