@@ -811,7 +811,7 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                       ),
                       const Spacer(),
-                      const _TierPill(),
+                      _TierPill(),
                     ],
                   ),
                   if (_statusMessage != null) ...[
@@ -892,13 +892,13 @@ class _TierPill extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                isPro ? Icons.workspace_premium : Icons.lock_open,
+                isPro ? Icons.workspace_premium : Icons.lock,
                 size: 14,
                 color: fg,
               ),
               const SizedBox(width: 4),
               Text(
-                tier.label.toUpperCase(),
+                isPro ? 'PRO' : 'UPGRADE',
                 style: TextStyle(
                   color: fg,
                   fontSize: 11,
