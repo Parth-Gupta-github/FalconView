@@ -127,6 +127,7 @@ class OfflineSearchIndex {
     int regionId,
     LatLngBounds bbox, {
     void Function(double percent)? onProgress,
+    bool Function(double lat, double lon)? contains,
   }) async {
     onProgress?.call(0);
     // Stale reader on the old file would block the delete + reopen below.
@@ -198,7 +199,8 @@ class OfflineSearchIndex {
           final Uint8List? bytes = fetched[j];
           if (bytes == null || bytes.isEmpty) continue;
           final _TileKey t = chunk[j];
-          final int added = _extractFromTile(poiBatch, bytes, t.z, t.x, t.y);
+          final int added =
+              _extractFromTile(poiBatch, bytes, t.z, t.x, t.y, contains);
           inserted += added;
           poiPending += added;
           // Roads are emitted by OpenMapTiles from z13 upward in any useful
@@ -216,6 +218,7 @@ class OfflineSearchIndex {
               edgeBatch: edgeBatch,
               addedNodes: (int n) => nodePending += n,
               addedEdges: (int n) => edgePending += n,
+              contains: contains,
             );
           }
         }
@@ -336,7 +339,14 @@ class OfflineSearchIndex {
     return out;
   }
 
-  int _extractFromTile(Batch batch, Uint8List bytes, int z, int x, int y) {
+  int _extractFromTile(
+    Batch batch,
+    Uint8List bytes,
+    int z,
+    int x,
+    int y,
+    bool Function(double lat, double lon)? contains,
+  ) {
     final VectorTile tile;
     try {
       tile = VectorTile.fromBytes(bytes: bytes);
@@ -358,6 +368,8 @@ class OfflineSearchIndex {
         final List<double> ll = TileMath.tilePixelToLatLng(
           z, x, y, point[0], point[1], extent,
         );
+        // Clip to the user-drawn area when one was supplied.
+        if (contains != null && !contains(ll[0], ll[1])) continue;
         batch.insert('features', <String, dynamic>{
           'name': name,
           'name_lc': name.toLowerCase(),

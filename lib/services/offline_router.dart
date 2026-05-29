@@ -91,6 +91,7 @@ class OfflineRouter {
     required Batch edgeBatch,
     required void Function(int) addedNodes,
     required void Function(int) addedEdges,
+    bool Function(double lat, double lon)? contains,
   }) {
     final VectorTile tile;
     try {
@@ -114,14 +115,19 @@ class OfflineRouter {
           int prevId = 0;
           double prevLat = 0;
           double prevLon = 0;
+          bool prevInside = false;
           for (int i = 0; i < line.length; i++) {
             final List<double> pt = line[i];
             if (pt.length < 2) continue;
             final List<double> ll = TileMath.tilePixelToLatLng(
               z, x, y, pt[0], pt[1], extent,
             );
+            // Clip the road graph to the user-drawn area: keep a node only if
+            // it falls inside, and an edge only when both endpoints do. Roads
+            // crossing the boundary are truncated at it.
+            final bool inside = contains == null || contains(ll[0], ll[1]);
             final int nodeId = _nodeIdFor(ll[0], ll[1]);
-            if (seenNodes.add(nodeId)) {
+            if (inside && seenNodes.add(nodeId)) {
               nodeBatch.insert('road_nodes', <String, dynamic>{
                 'id': nodeId,
                 'lat': _snap(ll[0]),
@@ -129,7 +135,7 @@ class OfflineRouter {
               }, conflictAlgorithm: ConflictAlgorithm.ignore);
               addedNodes(1);
             }
-            if (i > 0 && prevId != nodeId) {
+            if (i > 0 && prevId != nodeId && inside && prevInside) {
               final int edgeKey = _edgeKey(prevId, nodeId);
               if (seenEdges.add(edgeKey)) {
                 final double len = _haversine(
@@ -159,6 +165,7 @@ class OfflineRouter {
             prevId = nodeId;
             prevLat = ll[0];
             prevLon = ll[1];
+            prevInside = inside;
           }
         }
       }

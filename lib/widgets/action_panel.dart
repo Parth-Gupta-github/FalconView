@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/tactical_theme.dart';
 
-enum MapMode { none, mark, track, ruler }
+enum MapMode { none, mark, track, ruler, area }
 
 class ActionPanel extends StatelessWidget {
   final MapMode mode;
@@ -51,6 +51,12 @@ class ActionPanel extends StatelessWidget {
             label: 'RULER',
             active: mode == MapMode.ruler,
             onTap: () => onModeToggled(MapMode.ruler),
+          ),
+          _ActionButton(
+            icon: Icons.crop_free,
+            label: 'AREA',
+            active: mode == MapMode.area,
+            onTap: () => onModeToggled(MapMode.area),
           ),
           _ActionButton(
             icon: Icons.delete_sweep_outlined,

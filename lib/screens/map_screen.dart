@@ -13,11 +13,14 @@ import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../services/location_service.dart';
 import '../services/offline_repository.dart';
+import '../services/offline_search_index.dart';
 import '../services/routing_service.dart';
 import '../services/subscription_service.dart';
 import '../services/tile_config.dart';
 import '../util/coordinate_formatter.dart';
 import '../util/geo_math.dart';
+import '../util/polygon_geo.dart';
+import '../util/tile_math.dart';
 import '../widgets/action_panel.dart';
 import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
@@ -33,6 +36,10 @@ const String _kCoordFormatPrefKey = 'coord_format';
 const String _kRulerSourceId = 'ruler-src';
 const String _kRulerLayerId = 'ruler-layer';
 const String _kMarkPinImageId = 'mark-pin-red';
+
+const String _kAreaSourceId = 'area-src';
+const String _kAreaFillLayerId = 'area-fill';
+const String _kAreaLineLayerId = 'area-line';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -123,6 +130,15 @@ class _MapScreenState extends State<MapScreen> {
   String? _statusMessage;
 
   final GlobalKey _actionPanelKey = GlobalKey();
+  final GlobalKey _areaBarKey = GlobalKey();
+
+  // AREA mode: user-drawn download polygon. Vertices in tap order; the closing
+  // edge is implicit. Circles mark each vertex; a fill+line layer shows the
+  // polygon. `_areaDownloading` gates re-entry while a download runs.
+  final List<LatLng> _areaPoints = <LatLng>[];
+  final List<Circle> _areaVertexCircles = <Circle>[];
+  bool _areaLayerAdded = false;
+  bool _areaDownloading = false;
 
   void _onMapCreated(MapLibreMapController controller) {
     _controller = controller;
@@ -376,6 +392,11 @@ class _MapScreenState extends State<MapScreen> {
     if (prev == MapMode.track && next != MapMode.track) {
       await _clearTrackOverlay();
     }
+    // Leaving AREA mode mid-draw discards the in-progress polygon (unless a
+    // download is running — that path clears it on completion).
+    if (prev == MapMode.area && next != MapMode.area && !_areaDownloading) {
+      await _clearAreaOverlay();
+    }
 
     setState(() => _mode = next);
 
@@ -396,6 +417,11 @@ class _MapScreenState extends State<MapScreen> {
         await c.removeLayer(_kRulerLayerId);
         await c.removeSource(_kRulerSourceId);
       }
+      if (_areaLayerAdded) {
+        await c.removeLayer(_kAreaLineLayerId);
+        await c.removeLayer(_kAreaFillLayerId);
+        await c.removeSource(_kAreaSourceId);
+      }
     }
 
     setState(() {
@@ -408,6 +434,10 @@ class _MapScreenState extends State<MapScreen> {
       _rulerCircleA = null;
       _rulerCircleB = null;
       _rulerLayerAdded = false;
+      _areaPoints.clear();
+      _areaVertexCircles.clear();
+      _areaLayerAdded = false;
+      _areaDownloading = false;
       _trackLine = null;
       _trackFrom = null;
       _trackFromCircle = null;
@@ -497,13 +527,20 @@ class _MapScreenState extends State<MapScreen> {
       case MapMode.track:
         await _setTrackDestination(coords);
         break;
+      case MapMode.area:
+        if (_isOverKey(_areaBarKey, screenPoint)) return;
+        await _addAreaPoint(coords);
+        break;
       case MapMode.none:
         break;
     }
   }
 
-  bool _isOverActionPanel(Point<double> screenPoint) {
-    final RenderObject? ro = _actionPanelKey.currentContext?.findRenderObject();
+  bool _isOverActionPanel(Point<double> screenPoint) =>
+      _isOverKey(_actionPanelKey, screenPoint);
+
+  bool _isOverKey(GlobalKey key, Point<double> screenPoint) {
+    final RenderObject? ro = key.currentContext?.findRenderObject();
     if (ro is! RenderBox) return false;
     final Offset topLeft = ro.localToGlobal(Offset.zero);
     final Rect rect = topLeft & ro.size;
@@ -765,6 +802,172 @@ class _MapScreenState extends State<MapScreen> {
     _trackToCircle = null;
   }
 
+  // ---------------- AREA (custom download polygon) ----------------
+
+  Future<void> _addAreaPoint(LatLng at) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null || _areaDownloading) return;
+    _areaPoints.add(at);
+    final Circle circle = await c.addCircle(CircleOptions(
+      geometry: at,
+      circleRadius: 5,
+      circleColor: '#1565C0',
+      circleStrokeColor: '#FFFFFF',
+      circleStrokeWidth: 2,
+    ));
+    _areaVertexCircles.add(circle);
+    await _redrawAreaPolygon();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _undoAreaPoint() async {
+    if (_areaPoints.isEmpty || _areaDownloading) return;
+    final MapLibreMapController? c = _controller;
+    _areaPoints.removeLast();
+    if (_areaVertexCircles.isNotEmpty) {
+      final Circle last = _areaVertexCircles.removeLast();
+      if (c != null) await c.removeCircle(last);
+    }
+    await _redrawAreaPolygon();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _redrawAreaPolygon() async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    final Map<String, dynamic> data;
+    if (_areaPoints.length >= 3) {
+      final List<List<double>> ring = _areaPoints
+          .map((LatLng p) => <double>[p.longitude, p.latitude])
+          .toList();
+      ring.add(<double>[_areaPoints.first.longitude, _areaPoints.first.latitude]);
+      data = <String, dynamic>{
+        'type': 'Feature',
+        'geometry': <String, dynamic>{
+          'type': 'Polygon',
+          'coordinates': <List<List<double>>>[ring],
+        },
+      };
+    } else if (_areaPoints.length == 2) {
+      data = _lineFeature(_areaPoints);
+    } else {
+      data = <String, dynamic>{
+        'type': 'FeatureCollection',
+        'features': <dynamic>[],
+      };
+    }
+
+    if (!_areaLayerAdded) {
+      await c.addGeoJsonSource(_kAreaSourceId, data);
+      await c.addFillLayer(
+        _kAreaSourceId,
+        _kAreaFillLayerId,
+        const FillLayerProperties(fillColor: '#1565C0', fillOpacity: 0.14),
+      );
+      await c.addLineLayer(
+        _kAreaSourceId,
+        _kAreaLineLayerId,
+        const LineLayerProperties(
+          lineColor: '#1565C0',
+          lineWidth: 2.5,
+          lineJoin: 'round',
+          lineCap: 'round',
+        ),
+      );
+      _areaLayerAdded = true;
+    } else {
+      await c.setGeoJsonSource(_kAreaSourceId, data);
+    }
+  }
+
+  Future<void> _clearAreaOverlay() async {
+    final MapLibreMapController? c = _controller;
+    if (c != null) {
+      for (final Circle circle in _areaVertexCircles) {
+        await c.removeCircle(circle);
+      }
+      if (_areaLayerAdded) {
+        await c.removeLayer(_kAreaLineLayerId);
+        await c.removeLayer(_kAreaFillLayerId);
+        await c.removeSource(_kAreaSourceId);
+      }
+    }
+    _areaVertexCircles.clear();
+    _areaPoints.clear();
+    _areaLayerAdded = false;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _downloadArea() async {
+    if (_areaPoints.length < 3 || _areaDownloading) return;
+    if (subscriptionService.tier != AppTier.pro) {
+      _showTopToast(
+        'Offline download is a Pro feature. Enable Pro in Plans.',
+        error: true,
+      );
+      return;
+    }
+    final List<LatLng> pts = List<LatLng>.from(_areaPoints);
+    final LatLngBounds bbox = PolygonGeo.boundsOf(pts);
+    final LatLng center = PolygonGeo.centroidOf(pts);
+    final String sizeText = TileMath.estimatedDownloadSize(
+      bbox.southwest.latitude,
+      bbox.southwest.longitude,
+      bbox.northeast.latitude,
+      bbox.northeast.longitude,
+    );
+    final Place place = Place(
+      name: 'Custom area',
+      subtitle: '${pts.length}-point area · $sizeText',
+      center: center,
+      bbox: bbox,
+      polygon: pts,
+    );
+
+    setState(() => _areaDownloading = true);
+    _setStatusMessage('Downloading area… 0%');
+    try {
+      await _offline.download(
+        place,
+        onProgress: (double pct) {
+          if (!mounted) return;
+          _setStatusMessage('Downloading area… ${pct.round()}%');
+        },
+      );
+      if (!mounted) return;
+      final String? indexErr = _offline.lastIndexError;
+      final IndexBuildStats? stats = _offline.lastIndexStats;
+      await _clearAreaOverlay();
+      if (!mounted) return;
+      setState(() {
+        _mode = MapMode.none;
+        _areaDownloading = false;
+        _statusMessage = null;
+      });
+      if (indexErr != null) {
+        _showTopToast('Area saved, but index failed: $indexErr', error: true);
+      } else {
+        final String tail =
+            stats == null ? '' : ' · ${stats.poisInserted} POIs';
+        _showTopToast('Area downloaded$tail');
+      }
+    } on OfflineNotAvailable catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _areaDownloading = false;
+        _statusMessage = null;
+      });
+      _showTopToast(e.message, error: true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _areaDownloading = false;
+        _statusMessage = null;
+      });
+      _showTopToast('Download failed: $e', error: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
@@ -819,6 +1022,20 @@ class _MapScreenState extends State<MapScreen> {
                     Align(
                       alignment: Alignment.topRight,
                       child: _StatusBadge(message: _statusMessage!),
+                    ),
+                  ],
+                  if (_mode == MapMode.area) ...[
+                    const SizedBox(height: 8),
+                    _AreaControlBar(
+                      key: _areaBarKey,
+                      pointCount: _areaPoints.length,
+                      downloading: _areaDownloading,
+                      onUndo: (_areaPoints.isEmpty || _areaDownloading)
+                          ? null
+                          : _undoAreaPoint,
+                      onDownload: (_areaPoints.length >= 3 && !_areaDownloading)
+                          ? _downloadArea
+                          : null,
                     ),
                   ],
                 ],
@@ -944,6 +1161,86 @@ class _StatusBadge extends StatelessWidget {
               color: TacticalPalette.textPrimary,
               fontSize: 12,
               fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Top-of-screen controls shown while AREA mode is active: a hint + point
+/// count, an undo button, and a download button enabled once the polygon has
+/// at least three vertices.
+class _AreaControlBar extends StatelessWidget {
+  const _AreaControlBar({
+    super.key,
+    required this.pointCount,
+    required this.downloading,
+    required this.onUndo,
+    required this.onDownload,
+  });
+
+  final int pointCount;
+  final bool downloading;
+  final VoidCallback? onUndo;
+  final VoidCallback? onDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    final String hint = downloading
+        ? 'Downloading area…'
+        : pointCount < 3
+            ? 'Tap the map to add points ($pointCount/3)'
+            : '$pointCount points · tap Download';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: TacticalPalette.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: TacticalPalette.accent.withValues(alpha: 0.5)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.crop_free, size: 16, color: TacticalPalette.accent),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              hint,
+              style: const TextStyle(
+                color: TacticalPalette.textPrimary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Undo last point',
+            visualDensity: VisualDensity.compact,
+            onPressed: onUndo,
+            icon: const Icon(Icons.undo, size: 18),
+          ),
+          const SizedBox(width: 2),
+          FilledButton.icon(
+            onPressed: onDownload,
+            icon: downloading
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.download, size: 16),
+            label: const Text('Download'),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              visualDensity: VisualDensity.compact,
             ),
           ),
         ],

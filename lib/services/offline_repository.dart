@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
+import '../util/polygon_geo.dart';
 import 'offline_router.dart';
 import 'offline_search_index.dart';
 import 'routing_service.dart' show RouteResult;
@@ -65,6 +66,14 @@ class OfflineRepository {
       );
     }
     final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
+    // Map tiles are square, so we always download the polygon's bounding box.
+    // The POI + road-graph extracts below are what get clipped to the drawn
+    // area via this predicate (null for plain rectangular regions).
+    final List<LatLng>? poly = place.polygon;
+    final bool Function(double lat, double lon)? contains =
+        (poly != null && poly.length >= 3)
+            ? (double lat, double lon) => PolygonGeo.contains(poly, lat, lon)
+            : null;
     final OfflineRegionDefinition definition = OfflineRegionDefinition(
       bounds: place.bbox,
       mapStyleUrl: cfg.styleUrl,
@@ -94,6 +103,7 @@ class OfflineRepository {
       final IndexBuildStats stats = await _index.build(
         region.id,
         place.bbox,
+        contains: contains,
         onProgress: (double pct) {
           if (onProgress != null) onProgress(50 + pct * 0.5);
         },
