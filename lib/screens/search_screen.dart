@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
-import '../services/nominatim_service.dart';
+import '../services/bundled_place_index.dart';
 import '../services/offline_repository.dart';
 import '../services/offline_search_index.dart';
 import '../services/subscription_service.dart';
@@ -25,7 +25,6 @@ class _SearchScreenState extends State<SearchScreen> {
 
   SearchTab _tab = SearchTab.search;
   final TextEditingController _controller = TextEditingController();
-  final NominatimService _nominatim = NominatimService();
   final OfflineRepository _offline = OfflineRepository();
 
   Timer? _debounceTimer;
@@ -49,7 +48,6 @@ class _SearchScreenState extends State<SearchScreen> {
   void dispose() {
     _debounceTimer?.cancel();
     _controller.dispose();
-    _nominatim.dispose();
     subscriptionService.removeListener(_onTierChanged);
     super.dispose();
   }
@@ -121,37 +119,42 @@ class _SearchScreenState extends State<SearchScreen> {
       _loading = true;
       _error = null;
     });
+    // Each source is queried independently so a failure in one (e.g. a
+    // per-region DB hasn't been built yet) can't take down the whole search.
+    List<Place> places = const <Place>[];
     try {
-      final List<Place> results = await _nominatim.search(query);
-      if (!mounted || seq != _requestSeq) return;
-      setState(() {
-        _searchResults = _withCuratedAggregate(query, results);
-        _loading = false;
-      });
-    } catch (_) {
-      // Offline POI fallback only kicks in for Pro — Free users see the
-      // plain network-failed message and can upgrade via the Plans screen.
-      if (subscriptionService.tier == AppTier.pro) {
-        final List<Place> cached = await _offline.searchOffline(query);
-        if (!mounted || seq != _requestSeq) return;
-        if (cached.isNotEmpty) {
-          setState(() {
-            _searchResults = cached;
-            _loading = false;
-            _error = null;
-          });
-          return;
-        }
-      }
-      if (!mounted || seq != _requestSeq) return;
-      setState(() {
-        _loading = false;
-        _error = subscriptionService.tier == AppTier.pro
-            ? 'Search failed and no offline matches in downloaded regions.'
-            : 'Search failed. Check your connection.';
-        _searchResults = const <Place>[];
-      });
+      places = await bundledPlaceIndex.search(query);
+    } catch (e, s) {
+      debugPrint('bundledPlaceIndex.search threw: $e\n$s');
     }
+    List<Place> pois = const <Place>[];
+    if (subscriptionService.tier == AppTier.pro) {
+      try {
+        pois = await _offline.searchOffline(query);
+      } catch (e, s) {
+        debugPrint('_offline.searchOffline threw: $e\n$s');
+      }
+    }
+    if (!mounted || seq != _requestSeq) return;
+    final List<Place> merged = <Place>[...places, ...pois];
+    setState(() {
+      _searchResults = _withCuratedAggregate(query, merged);
+      _loading = false;
+      if (merged.isNotEmpty) {
+        _error = null;
+      } else if (!bundledPlaceIndex.hasBuilt) {
+        _error = 'Building offline place index… try again in a moment.';
+      } else if (bundledPlaceIndex.lastBuildError != null) {
+        _error =
+            'Place index build failed: ${bundledPlaceIndex.lastBuildError}';
+      } else if (bundledPlaceIndex.builtCount == 0) {
+        _error = 'Bundled basemap has no place entries. '
+            'Rebuild with a larger area: '
+            './generate.ps1 -Area india';
+      } else {
+        _error = 'No places match "$query".';
+      }
+    });
   }
 
   Future<void> _onDownloadTap(Place place) async {
