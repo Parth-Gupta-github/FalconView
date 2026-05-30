@@ -417,27 +417,7 @@ class _SearchScreenState extends State<SearchScreen> {
         if (_recentSearches.isNotEmpty) {
           return _buildRecentList();
         }
-        return const Center(
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  'Type to search places',
-                  style: TextStyle(color: Colors.black54),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  'Or paste coordinates — e.g.  43.74, 7.42  or  '
-                  '43°44\'N 7°25\'E',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.black38, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-        );
+        return _buildSearchEmpty();
       }
     } else if (_downloadedLoading) {
       return const Center(child: CircularProgressIndicator());
@@ -446,9 +426,12 @@ class _SearchScreenState extends State<SearchScreen> {
         ? rows.where((p) => p.name.toLowerCase().contains(_controller.text.trim().toLowerCase())).toList()
         : rows;
     if (visible.isEmpty) {
+      if (!isSearch && !hasQuery) {
+        return _buildDownloadedEmpty();
+      }
       return Center(
         child: Text(
-          isSearch ? 'No results' : 'No offline regions yet',
+          isSearch ? 'No results' : 'No matches in your downloaded regions',
           style: const TextStyle(color: Colors.black54),
         ),
       );
@@ -689,6 +672,126 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
     return null;
+  }
+
+  // ---------------- Empty states ----------------
+
+  /// Quick-tap suggestions for users who haven't searched anything yet and
+  /// have no recents. India-leaning since FalconView's source data and main
+  /// users are India-based, but feel free to tune the list.
+  static const List<String> _suggestionPlaces = <String>[
+    'Bhopal',
+    'Mumbai',
+    'Bengaluru',
+    'Delhi',
+    'Indore',
+  ];
+
+  Widget _buildSearchEmpty() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(Icons.search, size: 56, color: Colors.black.withValues(alpha: 0.18)),
+          const SizedBox(height: 16),
+          const Text(
+            'Type to search places',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Or paste coordinates — e.g. 43.74, 7.42  or  43°44\'N 7°25\'E',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.black54, fontSize: 12),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'TRY',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Colors.black.withValues(alpha: 0.45),
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: <Widget>[
+              for (final String name in _suggestionPlaces)
+                ActionChip(
+                  label: Text(name),
+                  avatar: const Icon(Icons.place_outlined, size: 16),
+                  onPressed: () {
+                    _controller.text = name;
+                    _controller.selection = TextSelection.collapsed(
+                      offset: name.length,
+                    );
+                    _onQueryChanged(name);
+                  },
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDownloadedEmpty() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Container(
+            width: 96,
+            height: 96,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.blueGrey.shade50,
+              border: Border.all(color: Colors.blueGrey.shade100, width: 2),
+            ),
+            child: Icon(
+              Icons.cloud_download_outlined,
+              size: 44,
+              color: Colors.blueGrey.shade400,
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'No offline regions yet',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Find a city in Search and tap the download icon to keep its '
+            'map, search, and routes available offline.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.black54, fontSize: 13, height: 1.4),
+          ),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: () {
+              setState(() => _tab = SearchTab.search);
+              _controller.clear();
+            },
+            icon: const Icon(Icons.search, size: 18),
+            label: const Text('Go to Search'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Distance from the user's current location to the result, formatted as
