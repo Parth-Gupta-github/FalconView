@@ -9,6 +9,7 @@ import '../models/place.dart';
 import '../services/nominatim_service.dart';
 import '../services/offline_repository.dart';
 import '../services/offline_search_index.dart';
+import '../services/recent_searches.dart';
 import '../services/subscription_service.dart';
 import '../util/tile_math.dart';
 import 'plans_screen.dart';
@@ -40,11 +41,59 @@ class _SearchScreenState extends State<SearchScreen> {
   bool _downloadedLoading = true;
   Map<int, PoiSource> _poiSourceByRegion = const <int, PoiSource>{};
 
+  List<Place> _recentSearches = const <Place>[];
+
   @override
   void initState() {
     super.initState();
     _refreshDownloaded();
+    _loadRecents();
     subscriptionService.addListener(_onTierChanged);
+  }
+
+  Future<void> _loadRecents() async {
+    final List<Place> list = await recentSearchesStore.load();
+    if (!mounted) return;
+    setState(() => _recentSearches = list);
+  }
+
+  /// Single funnel for "user picked this place" — persist it to recents,
+  /// then pop with it. Used by both the result-row tap and the Enter-key
+  /// submit handler so we never miss recording a pick.
+  void _selectPlace(Place place) {
+    unawaited(recentSearchesStore.add(place).then((_) => _loadRecents()));
+    Navigator.of(context).pop(place);
+  }
+
+  Future<void> _removeRecent(Place place) async {
+    await recentSearchesStore.remove(place);
+    await _loadRecents();
+  }
+
+  Future<void> _clearAllRecents() async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('Clear recent searches?'),
+        content: const Text(
+          'This wipes the list of places shown above the search bar. '
+          'Your downloaded regions are not affected.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await recentSearchesStore.clear();
+    await _loadRecents();
   }
 
   @override
@@ -226,7 +275,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void _submitFirstResult() {
     if (_tab != SearchTab.search) return;
     if (_searchResults.isEmpty) return;
-    Navigator.of(context).pop(_searchResults.first);
+    _selectPlace(_searchResults.first);
   }
 
   @override
@@ -330,6 +379,9 @@ class _SearchScreenState extends State<SearchScreen> {
         );
       }
       if (!hasQuery) {
+        if (_recentSearches.isNotEmpty) {
+          return _buildRecentList();
+        }
         return const Center(
           child: Text('Type to search places', style: TextStyle(color: Colors.black54)),
         );
@@ -376,9 +428,75 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
           subtitle: Text(p.subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
           trailing: _buildTrailing(p, isSearch),
-          onTap: () => Navigator.of(context).pop(p),
+          onTap: () => _selectPlace(p),
         );
       },
+    );
+  }
+
+  /// Empty-state list shown on the Search tab when the input is empty but
+  /// the user has picked places before. Tap a row → pop with that Place.
+  /// Each row has a close icon to remove just that entry. A "Clear all"
+  /// text button at the top wipes everything.
+  Widget _buildRecentList() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+          child: Row(
+            children: <Widget>[
+              Icon(Icons.history, size: 18, color: Colors.grey.shade600),
+              const SizedBox(width: 8),
+              Text(
+                'Recent',
+                style: TextStyle(
+                  color: Colors.grey.shade700,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.4,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: _clearAllRecents,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  visualDensity: VisualDensity.compact,
+                ),
+                child: const Text('Clear all'),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView.separated(
+            itemCount: _recentSearches.length,
+            separatorBuilder: (_, _) => const Divider(height: 1),
+            itemBuilder: (BuildContext ctx, int i) {
+              final Place p = _recentSearches[i];
+              return ListTile(
+                leading: Icon(Icons.history, color: Colors.grey.shade500),
+                title: Text(p.name, overflow: TextOverflow.ellipsis),
+                subtitle: p.subtitle.isEmpty
+                    ? null
+                    : Text(
+                        p.subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                trailing: IconButton(
+                  tooltip: 'Remove from recent',
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () => _removeRecent(p),
+                ),
+                onTap: () => _selectPlace(p),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
