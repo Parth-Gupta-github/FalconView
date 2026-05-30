@@ -3,15 +3,18 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
+import 'package:geolocator/geolocator.dart';
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
+import '../services/location_service.dart';
 import '../services/nominatim_service.dart';
 import '../services/offline_repository.dart';
 import '../services/offline_search_index.dart';
 import '../services/recent_searches.dart';
 import '../services/subscription_service.dart';
 import '../util/coordinate_parser.dart';
+import '../util/geo_math.dart';
 import '../util/tile_math.dart';
 import 'plans_screen.dart';
 
@@ -31,6 +34,11 @@ class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _controller = TextEditingController();
   final NominatimService _nominatim = NominatimService();
   final OfflineRepository _offline = OfflineRepository();
+  final LocationService _locationService = LocationService();
+
+  // One-shot GPS snapshot used to render a distance chip on each result.
+  // Null while loading or if permission is denied — the chip just hides.
+  Position? _gps;
 
   Timer? _debounceTimer;
   int _requestSeq = 0;
@@ -49,7 +57,20 @@ class _SearchScreenState extends State<SearchScreen> {
     super.initState();
     _refreshDownloaded();
     _loadRecents();
+    _loadGps();
     subscriptionService.addListener(_onTierChanged);
+  }
+
+  /// One-shot GPS read. Permission was almost certainly already granted on
+  /// the map screen, so this just snapshots the current fix without
+  /// re-prompting in the common case. Failures are silent — the distance
+  /// chips just don't render.
+  Future<void> _loadGps() async {
+    try {
+      final Position pos = await _locationService.currentPosition();
+      if (!mounted) return;
+      setState(() => _gps = pos);
+    } catch (_) {}
   }
 
   Future<void> _loadRecents() async {
@@ -444,6 +465,7 @@ class _SearchScreenState extends State<SearchScreen> {
         // Only show size on the Search tab — Downloaded rows are already
         // on disk so the estimate is no longer actionable there.
         final String? sizeText = isSearch ? _sizeEstimate(p) : null;
+        final String? distText = isSearch ? _distanceLabel(p) : null;
         return ListTile(
           title: Row(
             children: <Widget>[
@@ -451,6 +473,10 @@ class _SearchScreenState extends State<SearchScreen> {
               if (src != null && src != PoiSource.none) ...<Widget>[
                 const SizedBox(width: 8),
                 _PoiSourceChip(source: src),
+              ],
+              if (distText != null) ...<Widget>[
+                const SizedBox(width: 8),
+                _DistanceChip(text: distText),
               ],
               if (sizeText != null) ...<Widget>[
                 const SizedBox(width: 8),
@@ -665,6 +691,21 @@ class _SearchScreenState extends State<SearchScreen> {
     return null;
   }
 
+  /// Distance from the user's current location to the result, formatted as
+  /// "2.3 km" / "580 km" / "120 m". Null when we don't have a GPS fix yet
+  /// (in which case the chip simply isn't rendered).
+  String? _distanceLabel(Place p) {
+    final Position? gps = _gps;
+    if (gps == null) return null;
+    final double meters = GeoMath.haversineMeters(
+      gps.latitude,
+      gps.longitude,
+      p.center.latitude,
+      p.center.longitude,
+    );
+    return GeoMath.formatDistance(meters);
+  }
+
   String _sizeEstimate(Place p) {
     return TileMath.estimatedDownloadSize(
       p.bbox.southwest.latitude,
@@ -701,6 +742,43 @@ class _SizeChip extends StatelessWidget {
             text,
             style: TextStyle(
               color: Colors.blueGrey.shade800,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DistanceChip extends StatelessWidget {
+  const _DistanceChip({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.teal.shade50,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: Colors.teal.shade300.withValues(alpha: 0.6),
+          width: 0.8,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(Icons.near_me_outlined, size: 11, color: Colors.teal.shade700),
+          const SizedBox(width: 3),
+          Text(
+            text,
+            style: TextStyle(
+              color: Colors.teal.shade800,
               fontSize: 10,
               fontWeight: FontWeight.w600,
               letterSpacing: 0.3,
