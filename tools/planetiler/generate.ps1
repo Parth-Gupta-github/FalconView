@@ -34,6 +34,12 @@
   Skip the precheck that fails fast when WorkDir's drive doesn't have enough
   room for the chosen area.
 
+.PARAMETER Bounds
+  Optional output bounding box, "west,south,east,north" in decimal degrees.
+  Clips the MBTiles to this rectangle so the output is small even when the
+  source PBF is country-sized. Use with -Area to target a city inside a
+  country, e.g. -Area india -Bounds "75.37,22.27,76.35,23.17" for Indore.
+
 .EXAMPLE
   ./generate.ps1
   Full planet, z0-6, working space on F:\planetiler-work, ~15 min.
@@ -41,6 +47,11 @@
 .EXAMPLE
   ./generate.ps1 -Area monaco
   Tiny smoke test, ~30 seconds, ~500 MB working space.
+
+.EXAMPLE
+  ./generate.ps1 -Area indore -MaxZoom 14
+  Indore + ~50 km at street level. Downloads India PBF (~1.5 GB one-time)
+  and clips to the city bbox. Output ~30-80 MB.
 
 .EXAMPLE
   ./generate.ps1 -Area india -WorkDir D:\pl-work
@@ -52,8 +63,26 @@ param(
     [int]$MaxZoom = 6,
     [string]$Memory = "6g",
     [string]$WorkDir = "F:\planetiler-work",
-    [switch]$SkipFreeSpaceCheck
+    [switch]$SkipFreeSpaceCheck,
+    [string]$Bounds = ""
 )
+
+# City-level presets. Each entry resolves a friendly area name to (the OSM
+# extract Planetiler should download, the bbox to clip to). Add more here
+# without touching the rest of the script.
+$presets = @{
+    "indore"  = @{ source = "india"; bounds = "75.37,22.27,76.35,23.17" }
+    "bhopal"  = @{ source = "india"; bounds = "77.15,23.05,77.65,23.42" }
+    "delhi"   = @{ source = "india"; bounds = "76.84,28.40,77.35,28.88" }
+    "mumbai"  = @{ source = "india"; bounds = "72.77,18.89,73.00,19.27" }
+}
+$presetKey = $Area.ToLower()
+if ($presets.ContainsKey($presetKey)) {
+    $preset = $presets[$presetKey]
+    $Area   = $preset.source
+    if ([string]::IsNullOrEmpty($Bounds)) { $Bounds = $preset.bounds }
+    Write-Host "Preset '$presetKey' → source=$Area, bounds=$Bounds"
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -148,6 +177,7 @@ if (-not (Test-Path $plJar)) {
 Write-Host ""
 Write-Host "Building bundled basemap:"
 Write-Host "  area:       $Area"
+if (-not [string]::IsNullOrEmpty($Bounds)) { Write-Host "  bounds:     $Bounds" }
 Write-Host "  zooms:      $MinZoom..$MaxZoom"
 Write-Host "  output:     $outFile"
 Write-Host "  work dir:   $WorkDir"
@@ -176,6 +206,9 @@ $javaArgs = @(
     "--download-dir=$downloadDir"
     "--force"
 ) + $areaArg.Split(" ")
+if (-not [string]::IsNullOrEmpty($Bounds)) {
+    $javaArgs += "--bounds=$Bounds"
+}
 
 & java @javaArgs
 if ($LASTEXITCODE -ne 0) {

@@ -304,7 +304,9 @@ class BundledPlaceIndex {
       return;
     }
     for (final VectorTileLayer layer in tile.layers) {
-      if (layer.name != 'place') continue;
+      final bool isPlace = layer.name == 'place';
+      final bool isPoi = layer.name == 'poi';
+      if (!isPlace && !isPoi) continue;
       final int extent = layer.extent;
       for (final VectorTileFeature feature in layer.features) {
         feature.decodeProperties();
@@ -312,7 +314,9 @@ class BundledPlaceIndex {
         if (props == null) continue;
         final String? name = _stringProp(props['name']);
         if (name == null || name.isEmpty) continue;
-        final String cls = _stringProp(props['class']) ?? 'place';
+        final String cls = _stringProp(props['class']) ??
+            (isPoi ? 'poi' : 'place');
+        final String? subclass = _stringProp(props['subclass']);
         final int? sourceRank = _intProp(props['rank']);
         final List<num>? pt = _firstPoint(feature);
         if (pt == null) continue;
@@ -320,17 +324,25 @@ class BundledPlaceIndex {
             TileMath.tilePixelToLatLng(z, x, y, pt[0], pt[1], extent);
         // Dedup key collapses the same name within ~1 km radius across tiles
         // and zooms. Tiles are visited high-z → low-z, so the higher-z (more
-        // precise) hit wins.
-        final String key = '${name.toLowerCase()}|'
+        // precise) hit wins. Layer is part of the key so a place named the
+        // same as a nearby POI doesn't collide.
+        final String key = '${layer.name}|'
+            '${name.toLowerCase()}|'
             '${(ll[0] * 100).round()}|'
             '${(ll[1] * 100).round()}';
         if (dedup.containsKey(key)) continue;
+        // For POIs we tuck the subclass into `cls` so the subtitle reads
+        // "restaurant · fast_food" etc. — preserves more info than `class`
+        // alone without growing the schema.
+        final String displayCls = (isPoi && subclass != null && subclass != cls)
+            ? '$cls · $subclass'
+            : cls;
         dedup[key] = _PlaceRecord(
           name: name,
-          cls: cls,
+          cls: displayCls,
           lat: ll[0],
           lon: ll[1],
-          rank: _rankFor(cls, sourceRank),
+          rank: _rankFor(isPoi ? 'poi:$cls' : cls, sourceRank),
         );
       }
     }
@@ -349,6 +361,12 @@ class BundledPlaceIndex {
   /// Ordering: smaller = more important. Reads OpenMapTiles' own `rank`
   /// field when present (countries are 1-3, big cities are low single digits,
   /// villages are mid-teens) and falls back to a class-based default.
+  ///
+  /// POIs land in a higher base than admin places so a search for "Indore"
+  /// surfaces the city before any restaurant named Indore. Within POIs,
+  /// "tactical-relevant" classes (hospital, police, fuel) outrank a generic
+  /// shop. The `poi:<class>` prefix lets us look up POIs without colliding
+  /// with admin classes that share names.
   int _rankFor(String cls, int? sourceRank) {
     int base;
     switch (cls) {
@@ -376,8 +394,34 @@ class BundledPlaceIndex {
       case 'quarter':
         base = 800;
         break;
+      // POI classes (prefixed in _extractFromTile so they don't collide).
+      case 'poi:hospital':
+      case 'poi:police':
+      case 'poi:fire_station':
+      case 'poi:fuel':
+        base = 1500;
+        break;
+      case 'poi:railway':
+      case 'poi:bus':
+      case 'poi:aerialway':
+      case 'poi:airport':
+        base = 1600;
+        break;
+      case 'poi:school':
+      case 'poi:college':
+      case 'poi:university':
+      case 'poi:library':
+        base = 1700;
+        break;
+      case 'poi:lodging':
+      case 'poi:restaurant':
+      case 'poi:fast_food':
+      case 'poi:cafe':
+      case 'poi:bar':
+        base = 1800;
+        break;
       default:
-        base = 1000;
+        base = cls.startsWith('poi:') ? 2000 : 1000;
     }
     return base + (sourceRank ?? 50);
   }
