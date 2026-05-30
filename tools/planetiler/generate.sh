@@ -24,6 +24,7 @@ OSM_URL=""
 MIN_ZOOM=0
 MAX_ZOOM=6
 MEMORY="6g"
+WORK_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,9 +34,13 @@ while [[ $# -gt 0 ]]; do
     --min-zoom) MIN_ZOOM="$2"; shift 2 ;;
     --max-zoom) MAX_ZOOM="$2"; shift 2 ;;
     --memory)   MEMORY="$2";   shift 2 ;;
+    --work-dir) WORK_DIR="$2"; shift 2 ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
+# Default WORK_DIR to a "planetiler-work" sibling of the repo so we don't
+# pollute the script directory with multi-GB temp files.
+[[ -z "$WORK_DIR" ]] && WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/planetiler-work"
 
 # City-level presets — point at the Geofabrik STATE-level extract (~100 MB)
 # rather than the whole country (~1.6 GB). The final MBTiles size is the
@@ -97,11 +102,16 @@ echo "  heap:    $MEMORY"
 echo ""
 
 # Decide how Planetiler should locate the OSM PBF:
-#   1. --osm-url explicit → use that URL
+#   1. --osm-url explicit → use that URL, AND derive a per-URL osm_path so
+#      the download doesn't collide with the default monaco.osm.pbf that
+#      Planetiler picks for osm_path otherwise (it would silently reuse
+#      the cached monaco file and ignore the URL).
 #   2. --area is a path that exists → local PBF
 #   3. otherwise → fetch by --area name
+DOWNLOAD_DIR="$WORK_DIR/sources"
 if [[ -n "$OSM_URL" ]]; then
-  AREA_ARGS=(--download --osm-url="$OSM_URL")
+  OSM_FILE="$DOWNLOAD_DIR/$(basename "$OSM_URL")"
+  AREA_ARGS=(--download --osm-url="$OSM_URL" --osm-path="$OSM_FILE")
 elif [[ -f "$AREA" ]]; then
   AREA_ARGS=(--osm-path="$AREA")
 else
@@ -116,7 +126,12 @@ PL_ARGS=(
 )
 [[ -n "$BOUNDS" ]] && PL_ARGS+=(--bounds="$BOUNDS")
 
-java "-Xmx${MEMORY}" -jar "$PL_JAR" "${PL_ARGS[@]}" "${AREA_ARGS[@]}"
+mkdir -p "$WORK_DIR/tmp" "$DOWNLOAD_DIR"
+
+java "-Xmx${MEMORY}" -jar "$PL_JAR" \
+  --tmpdir="$WORK_DIR/tmp" \
+  --download-dir="$DOWNLOAD_DIR" \
+  "${PL_ARGS[@]}" "${AREA_ARGS[@]}"
 
 SIZE_MB=$(du -m "$OUT_FILE" | cut -f1)
 echo ""

@@ -203,15 +203,25 @@ Write-Host "  heap:       $Memory"
 Write-Host ""
 
 # Decide how Planetiler should locate the OSM PBF, in priority order:
-#   1. -OsmUrl explicit → --download with that URL
-#   2. -Area is a path that exists → --osm-path
+#   1. -OsmUrl explicit → --download with that URL, AND a per-URL osm_path
+#      so the download doesn't collide with the default ".../monaco.osm.pbf"
+#      that Planetiler picks for osm_path otherwise. Without this override
+#      Planetiler sees the cached monaco PBF at the default path and just
+#      uses it, silently ignoring the URL.
+#   2. -Area is a path that exists → --osm-path with that local file
 #   3. otherwise → --download --area=<name>
+$extraArgs = @()
 if (-not [string]::IsNullOrEmpty($OsmUrl)) {
-    $areaArg = "--download --osm-url=$OsmUrl"
+    $osmFileName    = [System.IO.Path]::GetFileName($OsmUrl)
+    $localOsmPath   = Join-Path $downloadDir $osmFileName
+    $extraArgs += "--download"
+    $extraArgs += "--osm-url=$OsmUrl"
+    $extraArgs += "--osm-path=$localOsmPath"
 } elseif (Test-Path $Area) {
-    $areaArg = "--osm-path=$Area"
+    $extraArgs += "--osm-path=$Area"
 } else {
-    $areaArg = "--download --area=$Area"
+    $extraArgs += "--download"
+    $extraArgs += "--area=$Area"
 }
 
 # Route ALL Planetiler scratch + downloaded sources onto WorkDir so we don't
@@ -230,7 +240,7 @@ $javaArgs = @(
     "--tmpdir=$tmpDir"
     "--download-dir=$downloadDir"
     "--force"
-) + $areaArg.Split(" ")
+) + $extraArgs
 if (-not [string]::IsNullOrEmpty($Bounds)) {
     $javaArgs += "--bounds=$Bounds"
 }
