@@ -64,24 +64,41 @@ param(
     [string]$Memory = "6g",
     [string]$WorkDir = "F:\planetiler-work",
     [switch]$SkipFreeSpaceCheck,
-    [string]$Bounds = ""
+    [string]$Bounds = "",
+    [string]$OsmUrl = ""
 )
 
-# City-level presets. Each entry resolves a friendly area name to (the OSM
-# extract Planetiler should download, the bbox to clip to). Add more here
-# without touching the rest of the script.
+# City-level presets. Each preset resolves a friendly name to a Geofabrik
+# STATE-level extract URL + a city bbox. State-level PBFs are 10-15× smaller
+# than country PBFs (Madhya Pradesh ~100 MB vs India ~1.6 GB) so the dev
+# download and build time drop dramatically — but the final MBTiles size
+# (what the phone bundles) is the same because we still clip with --bounds.
 $presets = @{
-    "indore"  = @{ source = "india"; bounds = "75.37,22.27,76.35,23.17" }
-    "bhopal"  = @{ source = "india"; bounds = "77.15,23.05,77.65,23.42" }
-    "delhi"   = @{ source = "india"; bounds = "76.84,28.40,77.35,28.88" }
-    "mumbai"  = @{ source = "india"; bounds = "72.77,18.89,73.00,19.27" }
+    "indore" = @{
+        osmUrl = "https://download.geofabrik.de/asia/india/madhya-pradesh-latest.osm.pbf";
+        bounds = "75.37,22.27,76.35,23.17"
+    }
+    "bhopal" = @{
+        osmUrl = "https://download.geofabrik.de/asia/india/madhya-pradesh-latest.osm.pbf";
+        bounds = "77.15,23.05,77.65,23.42"
+    }
+    "delhi" = @{
+        osmUrl = "https://download.geofabrik.de/asia/india/delhi-latest.osm.pbf";
+        bounds = "76.84,28.40,77.35,28.88"
+    }
+    "mumbai" = @{
+        osmUrl = "https://download.geofabrik.de/asia/india/maharashtra-latest.osm.pbf";
+        bounds = "72.77,18.89,73.00,19.27"
+    }
 }
 $presetKey = $Area.ToLower()
 if ($presets.ContainsKey($presetKey)) {
     $preset = $presets[$presetKey]
-    $Area   = $preset.source
+    if ([string]::IsNullOrEmpty($OsmUrl)) { $OsmUrl = $preset.osmUrl }
     if ([string]::IsNullOrEmpty($Bounds)) { $Bounds = $preset.bounds }
-    Write-Host "Preset '$presetKey' → source=$Area, bounds=$Bounds"
+    Write-Host "Preset '$presetKey' resolved:"
+    Write-Host "  osm-url: $OsmUrl"
+    Write-Host "  bounds:  $Bounds"
 }
 
 $ErrorActionPreference = "Stop"
@@ -185,9 +202,17 @@ Write-Host "  free space: $freeGB GB available, ~$required GB required"
 Write-Host "  heap:       $Memory"
 Write-Host ""
 
-# If $Area looks like a file path that exists, treat it as a local PBF.
-# Otherwise let Planetiler download it via --area.
-$areaArg = if (Test-Path $Area) { "--osm-path=$Area" } else { "--download --area=$Area" }
+# Decide how Planetiler should locate the OSM PBF, in priority order:
+#   1. -OsmUrl explicit → --download with that URL
+#   2. -Area is a path that exists → --osm-path
+#   3. otherwise → --download --area=<name>
+if (-not [string]::IsNullOrEmpty($OsmUrl)) {
+    $areaArg = "--download --osm-url=$OsmUrl"
+} elseif (Test-Path $Area) {
+    $areaArg = "--osm-path=$Area"
+} else {
+    $areaArg = "--download --area=$Area"
+}
 
 # Route ALL Planetiler scratch + downloaded sources onto WorkDir so we don't
 # touch C: at all.

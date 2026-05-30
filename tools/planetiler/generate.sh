@@ -20,6 +20,7 @@ set -euo pipefail
 
 AREA="planet"
 BOUNDS=""
+OSM_URL=""
 MIN_ZOOM=0
 MAX_ZOOM=6
 MEMORY="6g"
@@ -28,6 +29,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --area)     AREA="$2";     shift 2 ;;
     --bounds)   BOUNDS="$2";   shift 2 ;;
+    --osm-url)  OSM_URL="$2";  shift 2 ;;
     --min-zoom) MIN_ZOOM="$2"; shift 2 ;;
     --max-zoom) MAX_ZOOM="$2"; shift 2 ;;
     --memory)   MEMORY="$2";   shift 2 ;;
@@ -35,12 +37,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# City-level presets — resolve a friendly name to (source extract, bbox).
+# City-level presets — point at the Geofabrik STATE-level extract (~100 MB)
+# rather than the whole country (~1.6 GB). The final MBTiles size is the
+# same because we still clip with --bounds; this just shrinks the dev
+# download + processing time.
 case "$(echo "$AREA" | tr '[:upper:]' '[:lower:]')" in
-  indore) AREA="india";  [[ -z "$BOUNDS" ]] && BOUNDS="75.37,22.27,76.35,23.17" ;;
-  bhopal) AREA="india";  [[ -z "$BOUNDS" ]] && BOUNDS="77.15,23.05,77.65,23.42" ;;
-  delhi)  AREA="india";  [[ -z "$BOUNDS" ]] && BOUNDS="76.84,28.40,77.35,28.88" ;;
-  mumbai) AREA="india";  [[ -z "$BOUNDS" ]] && BOUNDS="72.77,18.89,73.00,19.27" ;;
+  indore)
+    [[ -z "$OSM_URL" ]] && OSM_URL="https://download.geofabrik.de/asia/india/madhya-pradesh-latest.osm.pbf"
+    [[ -z "$BOUNDS" ]]  && BOUNDS="75.37,22.27,76.35,23.17"
+    ;;
+  bhopal)
+    [[ -z "$OSM_URL" ]] && OSM_URL="https://download.geofabrik.de/asia/india/madhya-pradesh-latest.osm.pbf"
+    [[ -z "$BOUNDS" ]]  && BOUNDS="77.15,23.05,77.65,23.42"
+    ;;
+  delhi)
+    [[ -z "$OSM_URL" ]] && OSM_URL="https://download.geofabrik.de/asia/india/delhi-latest.osm.pbf"
+    [[ -z "$BOUNDS" ]]  && BOUNDS="76.84,28.40,77.35,28.88"
+    ;;
+  mumbai)
+    [[ -z "$OSM_URL" ]] && OSM_URL="https://download.geofabrik.de/asia/india/maharashtra-latest.osm.pbf"
+    [[ -z "$BOUNDS" ]]  && BOUNDS="72.77,18.89,73.00,19.27"
+    ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,8 +96,13 @@ echo "  output:  $OUT_FILE"
 echo "  heap:    $MEMORY"
 echo ""
 
-# Treat $AREA as a file path if it exists; otherwise download it.
-if [[ -f "$AREA" ]]; then
+# Decide how Planetiler should locate the OSM PBF:
+#   1. --osm-url explicit → use that URL
+#   2. --area is a path that exists → local PBF
+#   3. otherwise → fetch by --area name
+if [[ -n "$OSM_URL" ]]; then
+  AREA_ARGS=(--download --osm-url="$OSM_URL")
+elif [[ -f "$AREA" ]]; then
   AREA_ARGS=(--osm-path="$AREA")
 else
   AREA_ARGS=(--download --area="$AREA")
