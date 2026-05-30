@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "com.example.falconview"
-    compileSdk = flutter.compileSdkVersion
+    // file_picker's transitive deps (flutter_plugin_android_lifecycle) require
+    // compileSdk 36; flutter.compileSdkVersion resolves lower here, so pin it.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

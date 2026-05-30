@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/app_tier.dart';
@@ -35,6 +36,8 @@ class _SearchScreenState extends State<SearchScreen> {
   List<Place> _downloadedResults = const <Place>[];
   bool _downloadedLoading = true;
 
+  final ValueNotifier<double> _importProgress = ValueNotifier<double>(0);
+
   @override
   void initState() {
     super.initState();
@@ -47,8 +50,82 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer?.cancel();
     _controller.dispose();
     _nominatim.dispose();
+    _importProgress.dispose();
     subscriptionService.removeListener(_onTierChanged);
     super.dispose();
+  }
+
+  Future<void> _importMbtiles() async {
+    if (subscriptionService.tier != AppTier.pro) {
+      await _promptUpgrade();
+      return;
+    }
+    final FilePickerResult? res =
+        await FilePicker.platform.pickFiles(type: FileType.any);
+    final String? path = res?.files.single.path;
+    if (path == null) return;
+    if (!path.toLowerCase().endsWith('.mbtiles')) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please choose a .mbtiles file')),
+      );
+      return;
+    }
+
+    _importProgress.value = 0;
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text('Importing MBTiles'),
+        content: ValueListenableBuilder<double>(
+          valueListenable: _importProgress,
+          builder: (_, double v, _) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              LinearProgressIndicator(value: v > 0 ? v / 100 : null),
+              const SizedBox(height: 12),
+              Text('${v.round()}%  ·  building roads + POIs'),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    try {
+      final Place place = await _offline.importMbtiles(
+        path,
+        onProgress: (double pct) => _importProgress.value = pct,
+      );
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      await _refreshDownloaded();
+      if (!mounted) return;
+      setState(() => _tab = SearchTab.downloaded);
+      final IndexBuildStats? stats = _offline.lastIndexStats;
+      final String tail = stats == null
+          ? ''
+          : ' (${stats.tilesScanned} tiles → ${stats.poisInserted} POIs)';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Imported ${place.name}$tail'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } on OfflineNotAvailable catch (e) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: $e')),
+      );
+    }
   }
 
   void _onTierChanged() {
@@ -204,6 +281,13 @@ class _SearchScreenState extends State<SearchScreen> {
         leading: const BackButton(),
         elevation: 0,
         scrolledUnderElevation: 1,
+        actions: <Widget>[
+          IconButton(
+            tooltip: 'Import .mbtiles (offline roads + POIs)',
+            icon: const Icon(Icons.file_open_outlined),
+            onPressed: _importMbtiles,
+          ),
+        ],
       ),
       body: Column(
         children: [

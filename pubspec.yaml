@@ -44,6 +44,16 @@ dependencies:
   path_provider: ^2.1.0
   sqflite_common_ffi: ^2.3.0
   collection: ^1.18.0
+<<<<<<< Updated upstream
+=======
+  vector_tile: ^4.0.0
+  archive: ^4.0.7
+  file_picker: ^8.1.2
+  # file_picker pulls flutter_plugin_android_lifecycle; its newest releases
+  # demand compileSdk 36 (above this Flutter's default), which breaks the
+  # Android build. Pin to an older release that targets compileSdk 34.
+  flutter_plugin_android_lifecycle: 2.0.24
+>>>>>>> Stashed changes
 
 
 dev_dependencies:
