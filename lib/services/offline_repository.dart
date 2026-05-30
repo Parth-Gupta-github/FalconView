@@ -222,6 +222,38 @@ class OfflineRepository {
         p.longitude <= b.northeast.longitude;
   }
 
+  /// Tap-on-map handler: returns the closest indexed POI to (lat, lon)
+  /// across all downloaded regions whose bbox contains the tap, or null
+  /// when nothing is near (or no region covers the point).
+  Future<Place?> nearestPoiNear(
+    double lat,
+    double lon, {
+    double maxMeters = 50,
+  }) async {
+    if (kIsWeb) return null;
+    final List<Place> regions = await listDownloaded();
+    Place? best;
+    double bestDist = double.infinity;
+    for (final Place r in regions) {
+      final int? id = r.regionId;
+      if (id == null) continue;
+      if (!_bboxContains(r.bbox, LatLng(lat, lon))) continue;
+      final Place? hit =
+          await _index.nearest(id, lat, lon, maxMeters: maxMeters);
+      if (hit == null) continue;
+      // Squared lat/lon delta is good enough for ranking — we already
+      // capped by maxMeters inside _index.nearest.
+      final double dl = hit.center.latitude - lat;
+      final double dln = hit.center.longitude - lon;
+      final double d2 = dl * dl + dln * dln;
+      if (d2 < bestDist) {
+        bestDist = d2;
+        best = hit;
+      }
+    }
+    return best;
+  }
+
   Future<List<Place>> searchOffline(String query, {int limit = 20}) async {
     if (kIsWeb || query.trim().isEmpty) return const <Place>[];
     final List<Place> regions = await listDownloaded();

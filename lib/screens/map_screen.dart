@@ -6,7 +6,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show LogicalKeyboardKey;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, LogicalKeyboardKey;
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -187,6 +188,8 @@ class _MapScreenState extends State<MapScreen> {
     _toastTimer?.cancel();
     _toastEntry?.remove();
     _toastEntry = null;
+    _gpsSub?.cancel();
+    _gpsSub = null;
     _controller?.removeListener(_onControllerChanged);
     _controller?.onSymbolTapped.remove(_onSymbolTapped);
     subscriptionService.removeListener(_onTierChanged);
@@ -473,6 +476,12 @@ class _MapScreenState extends State<MapScreen> {
       _statusMessage = null;
     });
 
+    // Always-on GPS marker: clearCircles wiped it too, so re-add if we
+    // still have a fix. New circle ids will be tracked by _updateGpsMarker.
+    if (_currentGps != null) {
+      unawaited(_updateGpsMarker(_currentGps!));
+    }
+
     if (!mounted) return;
     _showTopToast('Cleared');
   }
@@ -558,8 +567,57 @@ class _MapScreenState extends State<MapScreen> {
         await _addAreaPoint(coords);
         break;
       case MapMode.none:
+        await _maybeShowPoiSheet(coords);
         break;
     }
+  }
+
+  /// Map idle-tap interaction: look up the nearest indexed POI within ~50 m
+  /// of the tap and present a small sheet with name + actions. No-op if no
+  /// downloaded region covers the tap or no POI is close.
+  Future<void> _maybeShowPoiSheet(LatLng coords) async {
+    final Place? poi = await _offline.nearestPoiNear(
+      coords.latitude,
+      coords.longitude,
+    );
+    if (!mounted || poi == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: false,
+      backgroundColor: TacticalPalette.panel,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (BuildContext ctx) => _PoiSheet(
+        poi: poi,
+        coordsText: _formatCoords(poi.center),
+        onDirections: () {
+          Navigator.pop(ctx);
+          _useAsTrackDestination(poi.center);
+        },
+        onMark: () {
+          Navigator.pop(ctx);
+          _addMark(poi.center);
+        },
+        onCopy: () async {
+          await Clipboard.setData(ClipboardData(
+            text: '${poi.name}\n${_formatCoords(poi.center)}',
+          ));
+          if (!ctx.mounted) return;
+          Navigator.pop(ctx);
+          _showTopToast('Copied');
+        },
+      ),
+    );
+  }
+
+  Future<void> _useAsTrackDestination(LatLng dest) async {
+    // Enter TRACK mode if not already in it, then drop the destination.
+    if (_mode != MapMode.track) {
+      await _onModeToggled(MapMode.track);
+    }
+    if (!mounted || _trackFrom == null) return;
+    await _setTrackDestination(dest);
   }
 
   bool _isOverActionPanel(Point<double> screenPoint) =>
@@ -597,6 +655,31 @@ class _MapScreenState extends State<MapScreen> {
     await c.addImage(_kMarkPinImageId, bytes);
     if (!mounted) return;
     setState(() => _markPinReady = true);
+    // Kick the always-on GPS marker once the style is ready (otherwise
+    // addCircle has nothing to attach to).
+    unawaited(_startGpsTracking());
+  }
+
+  StreamSubscription<Position>? _gpsSub;
+
+  /// Subscribes to a low-frequency position stream and keeps `_currentGps`
+  /// plus the on-map halo + dot in sync. Permission is checked once; if
+  /// denied, we silently give up and the user can still tap the GPS FAB
+  /// to trigger an explicit request later.
+  Future<void> _startGpsTracking() async {
+    if (_gpsSub != null) return;
+    try {
+      final Stream<Position> stream =
+          await _locationService.positionStream(distanceFilterMeters: 10);
+      _gpsSub = stream.listen((Position pos) {
+        if (!mounted) return;
+        final LatLng here = LatLng(pos.latitude, pos.longitude);
+        setState(() => _currentGps = here);
+        unawaited(_updateGpsMarker(here));
+      });
+    } on LocationDenied {
+      // Stay silent — user can still tap the GPS FAB to retry.
+    } catch (_) {}
   }
 
   Future<Uint8List> _renderIconToPng(IconData icon, Color color, double size) async {
@@ -1013,7 +1096,11 @@ class _MapScreenState extends State<MapScreen> {
             onMapClick: _onMapClick,
             trackCameraPosition: true,
             compassEnabled: false,
-            myLocationEnabled: true,
+            // We draw our own GPS halo + dot via _updateGpsMarker so we can
+            // keep it in sync with _currentGps and survive CLR. Letting
+            // MapLibre also render its native location indicator just gave
+            // us two stacked blue dots.
+            myLocationEnabled: false,
             myLocationRenderMode: MyLocationRenderMode.normal,
             myLocationTrackingMode: MyLocationTrackingMode.none,
             rotateGesturesEnabled: true,
@@ -1291,6 +1378,118 @@ class _AreaControlBar extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PoiSheet extends StatelessWidget {
+  final Place poi;
+  final String coordsText;
+  final VoidCallback onDirections;
+  final VoidCallback onMark;
+  final VoidCallback onCopy;
+
+  const _PoiSheet({
+    required this.poi,
+    required this.coordsText,
+    required this.onDirections,
+    required this.onMark,
+    required this.onCopy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: TacticalPalette.divider,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(Icons.place, color: TacticalPalette.accent, size: 22),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        poi.name,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: TacticalPalette.textPrimary,
+                        ),
+                      ),
+                      if (poi.subtitle.isNotEmpty) ...<Widget>[
+                        const SizedBox(height: 2),
+                        Text(
+                          poi.subtitle,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: TacticalPalette.textDim,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 4),
+                      Text(
+                        coordsText,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: TacticalPalette.textDim,
+                          fontFeatures: <FontFeature>[
+                            FontFeature.tabularFigures(),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: onDirections,
+                    icon: const Icon(Icons.directions, size: 18),
+                    label: const Text('Directions'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onMark,
+                    icon: const Icon(Icons.place_outlined, size: 18),
+                    label: const Text('Mark'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.outlined(
+                  onPressed: onCopy,
+                  icon: const Icon(Icons.copy, size: 18),
+                  tooltip: 'Copy coords',
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
@@ -494,6 +495,66 @@ class OfflineSearchIndex {
               bbox: _smallBbox(r['lat'] as double, r['lon'] as double),
             ))
         .toList();
+  }
+
+  /// Returns the nearest indexed POI within [maxMeters] of (lat, lon), or
+  /// null if nothing is close. Used by the map-tap interaction in
+  /// MapScreen — tap on a hospital icon → small bottom sheet with details.
+  Future<Place?> nearest(
+    int regionId,
+    double lat,
+    double lon, {
+    double maxMeters = 50,
+  }) async {
+    final File file = await _dbFileFor(regionId);
+    if (!await file.exists()) return null;
+    // Prefilter via a lat/lon box, then haversine-rank the candidates.
+    // 1° latitude ≈ 111 km. cos(lat) corrects longitude span at higher
+    // latitudes (so 50 m east at 60°N covers more lon-degrees than at 0°N).
+    final double dLat = maxMeters / 111000.0;
+    final double cosLat =
+        (lat.abs() < 89.5) ? math.cos(lat * math.pi / 180.0) : 0.01;
+    final double dLon = maxMeters / (111000.0 * cosLat);
+    final Database db = await _openForRead(regionId);
+    final List<Map<String, dynamic>> rows = await db.rawQuery(
+      '''
+        SELECT name, category, lat, lon FROM features
+        WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+        LIMIT 200
+      ''',
+      <Object?>[lat - dLat, lat + dLat, lon - dLon, lon + dLon],
+    );
+    if (rows.isEmpty) return null;
+    Map<String, dynamic>? best;
+    double bestDist = double.infinity;
+    for (final Map<String, dynamic> r in rows) {
+      final double rlat = (r['lat'] as num).toDouble();
+      final double rlon = (r['lon'] as num).toDouble();
+      final double d = _haversine(lat, lon, rlat, rlon);
+      if (d < bestDist) {
+        bestDist = d;
+        best = r;
+      }
+    }
+    if (best == null || bestDist > maxMeters) return null;
+    return Place(
+      name: best['name'] as String,
+      subtitle: (best['category'] as String?) ?? '',
+      center: LatLng(best['lat'] as double, best['lon'] as double),
+      bbox: _smallBbox(best['lat'] as double, best['lon'] as double),
+    );
+  }
+
+  double _haversine(double lat1, double lon1, double lat2, double lon2) {
+    const double r = 6371000.0;
+    final double dLat = (lat2 - lat1) * math.pi / 180.0;
+    final double dLon = (lon2 - lon1) * math.pi / 180.0;
+    final double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * math.pi / 180.0) *
+            math.cos(lat2 * math.pi / 180.0) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
   }
 
   LatLngBounds _smallBbox(double lat, double lon) {
