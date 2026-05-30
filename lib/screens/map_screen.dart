@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -404,6 +405,30 @@ class _MapScreenState extends State<MapScreen> {
     if (next == MapMode.track) {
       await _startTrackMode();
     }
+    if (next != MapMode.none) {
+      // Fire-and-forget — no need to block mode activation on prefs I/O.
+      unawaited(_maybeShowFirstTimeHint(next));
+    }
+  }
+
+  /// One-shot hint per mode. Once the user has activated MARK / RULER / TRACK
+  /// / AREA at least once, the hint stops appearing. CLR has no hint — its
+  /// effect is immediate and self-explanatory.
+  Future<void> _maybeShowFirstTimeHint(MapMode mode) async {
+    const Map<MapMode, String> hints = <MapMode, String>{
+      MapMode.mark: 'Tap anywhere on the map to drop a pin. Tap a pin to fly to it.',
+      MapMode.ruler: 'Tap two points to measure the straight-line distance.',
+      MapMode.track: 'Tap a destination on the map to draw the route from your location.',
+      MapMode.area: 'Tap on the map to add polygon vertices. Tap near the first vertex to close.',
+    };
+    final String? hint = hints[mode];
+    if (hint == null) return;
+    final String prefKey = 'mode_hint_seen_${mode.name}';
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(prefKey) ?? false) return;
+    await prefs.setBool(prefKey, true);
+    if (!mounted) return;
+    _showTopToast(hint);
   }
 
   Future<void> _onClear() async {
@@ -972,7 +997,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
-    return Scaffold(
+    final Widget scaffold = Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -1090,6 +1115,16 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ],
       ),
+    );
+
+    // Web-only keyboard shortcut: `/` focuses search (matches Google,
+    // GitHub, Slack conventions). Esc/Enter live on SearchScreen itself.
+    if (!kIsWeb) return scaffold;
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.slash): _openSearch,
+      },
+      child: Focus(autofocus: true, child: scaffold),
     );
   }
 }

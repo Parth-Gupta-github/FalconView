@@ -37,30 +37,35 @@ class ActionPanel extends StatelessWidget {
           _ActionButton(
             icon: Icons.place_outlined,
             label: 'MARK',
+            tooltip: 'Drop pins on the map · tap a pin to fly to it',
             active: mode == MapMode.mark,
             onTap: () => onModeToggled(MapMode.mark),
           ),
           _ActionButton(
             icon: Icons.timeline,
             label: 'TRACK',
+            tooltip: 'Route from your location to a tapped destination',
             active: mode == MapMode.track,
             onTap: () => onModeToggled(MapMode.track),
           ),
           _ActionButton(
             icon: Icons.straighten,
             label: 'RULER',
+            tooltip: 'Measure distance between two points',
             active: mode == MapMode.ruler,
             onTap: () => onModeToggled(MapMode.ruler),
           ),
           _ActionButton(
             icon: Icons.crop_free,
             label: 'AREA',
+            tooltip: 'Draw a polygon to download that exact area offline',
             active: mode == MapMode.area,
             onTap: () => onModeToggled(MapMode.area),
           ),
           _ActionButton(
             icon: Icons.delete_sweep_outlined,
             label: 'CLR',
+            tooltip: 'Clear all markers, rulers, routes, and areas',
             active: false,
             destructive: true,
             onTap: onClear,
@@ -74,6 +79,7 @@ class ActionPanel extends StatelessWidget {
 class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
+  final String tooltip;
   final bool active;
   final bool destructive;
   final VoidCallback onTap;
@@ -81,6 +87,7 @@ class _ActionButton extends StatelessWidget {
   const _ActionButton({
     required this.icon,
     required this.label,
+    required this.tooltip,
     required this.active,
     required this.onTap,
     this.destructive = false,
@@ -97,30 +104,34 @@ class _ActionButton extends StatelessWidget {
     return Expanded(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 3),
-        child: Material(
-          color: bg,
-          borderRadius: BorderRadius.circular(12),
-          child: InkWell(
+        child: Tooltip(
+          message: tooltip,
+          waitDuration: const Duration(milliseconds: 400),
+          child: Material(
+            color: bg,
             borderRadius: BorderRadius.circular(12),
-            onTap: onTap,
-            child: Container(
-              height: 52,
-              alignment: Alignment.center,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(icon, color: fg, size: 18),
-                  const SizedBox(height: 2),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      color: fg,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.8,
-                      fontSize: 11,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: onTap,
+              child: Container(
+                height: 52,
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon, color: fg, size: 18),
+                    const SizedBox(height: 2),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        color: fg,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.8,
+                        fontSize: 11,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

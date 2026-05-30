@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
@@ -219,13 +221,21 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
+  /// Enter-key handler on the search input: pop with the first visible
+  /// search result (online or offline-fallback). No-op when empty.
+  void _submitFirstResult() {
+    if (_tab != SearchTab.search) return;
+    if (_searchResults.isEmpty) return;
+    Navigator.of(context).pop(_searchResults.first);
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isSearch = _tab == SearchTab.search;
     final List<Place> rows = isSearch ? _searchResults : _downloadedResults;
     final bool hasQuery = _controller.text.trim().isNotEmpty;
 
-    return Scaffold(
+    final Widget scaffold = Scaffold(
       appBar: AppBar(
         title: const Text('Search'),
         leading: const BackButton(),
@@ -282,6 +292,7 @@ class _SearchScreenState extends State<SearchScreen> {
                 contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 16),
               ),
               onChanged: _onQueryChanged,
+              onSubmitted: (_) => _submitFirstResult(),
             ),
           ),
           const Divider(height: 1),
@@ -290,6 +301,18 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
         ),
       ),
+    );
+
+    // Web-only: Esc pops back to the map. Enter is already wired via the
+    // TextField's `onSubmitted` — that fires regardless of platform.
+    if (!kIsWeb) return scaffold;
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (Navigator.canPop(context)) Navigator.pop(context);
+        },
+      },
+      child: scaffold,
     );
   }
 
