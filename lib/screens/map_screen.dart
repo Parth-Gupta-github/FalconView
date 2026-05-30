@@ -35,6 +35,7 @@ import 'search_screen.dart';
 const LatLng _kInitialCenter = LatLng(22.7196, 75.8577);
 const double _kInitialZoom = 11;
 const String _kCoordFormatPrefKey = 'coord_format';
+const String _kRotationLockPrefKey = 'map_rotation_locked';
 
 const String _kRulerSourceId = 'ruler-src';
 const String _kRulerLayerId = 'ruler-layer';
@@ -67,10 +68,17 @@ class _MapScreenState extends State<MapScreen> {
   // for the very first frame so the map isn't blank.
   String? _renderStyleJson;
 
+  // When true, the map ignores rotate + tilt gestures and is kept snapped to
+  // north-up flat. Persisted so the choice survives an app restart. Useful
+  // for tactical use where users want bearings on the map to stay aligned
+  // with cardinal directions.
+  bool _rotationLocked = false;
+
   @override
   void initState() {
     super.initState();
     _loadCoordFormat();
+    _loadRotationLock();
     _loadRenderStyle();
     subscriptionService.addListener(_onTierChanged);
   }
@@ -103,6 +111,28 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _saveCoordFormat(CoordinateFormat fmt) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_kCoordFormatPrefKey, fmt.index);
+  }
+
+  Future<void> _loadRotationLock() async {
+    final prefs = await SharedPreferences.getInstance();
+    final bool locked = prefs.getBool(_kRotationLockPrefKey) ?? false;
+    if (!mounted) return;
+    setState(() => _rotationLocked = locked);
+  }
+
+  Future<void> _toggleRotationLock() async {
+    final bool next = !_rotationLocked;
+    setState(() => _rotationLocked = next);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kRotationLockPrefKey, next);
+    // When turning the lock on, snap the camera to north-up + flat so the
+    // user gets the expected result immediately. Turning off doesn't move
+    // the camera — gestures just become available again.
+    if (next) {
+      await _onResetBearing();
+    }
+    if (!mounted) return;
+    _showTopToast(next ? 'Rotation locked' : 'Rotation unlocked');
   }
 
   final List<Symbol> _markSymbols = <Symbol>[];
@@ -1103,8 +1133,8 @@ class _MapScreenState extends State<MapScreen> {
             myLocationEnabled: false,
             myLocationRenderMode: MyLocationRenderMode.normal,
             myLocationTrackingMode: MyLocationTrackingMode.none,
-            rotateGesturesEnabled: true,
-            tiltGesturesEnabled: true,
+            rotateGesturesEnabled: !_rotationLocked,
+            tiltGesturesEnabled: !_rotationLocked,
           ),
           SafeArea(
             child: Padding(
@@ -1174,6 +1204,23 @@ class _MapScreenState extends State<MapScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   CompassFab(bearing: _bearing, onTap: _onResetBearing),
+                  const SizedBox(height: 10),
+                  FloatingActionButton.small(
+                    heroTag: 'rotation-lock-fab',
+                    onPressed: _toggleRotationLock,
+                    tooltip: _rotationLocked
+                        ? 'Unlock map rotation'
+                        : 'Lock map to north up',
+                    backgroundColor: _rotationLocked
+                        ? TacticalPalette.accent
+                        : null,
+                    foregroundColor: _rotationLocked ? Colors.white : null,
+                    child: Icon(
+                      _rotationLocked
+                          ? Icons.screen_lock_rotation
+                          : Icons.screen_rotation_outlined,
+                    ),
+                  ),
                   const SizedBox(height: 10),
                   FloatingActionButton(
                     heroTag: 'gps-fab',
