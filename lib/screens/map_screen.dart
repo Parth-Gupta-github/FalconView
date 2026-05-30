@@ -11,6 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
+import '../services/bundled_basemap_server.dart';
+import '../services/bundled_place_index.dart';
 import '../services/location_service.dart';
 import '../services/offline_repository.dart';
 import '../services/offline_search_index.dart';
@@ -59,29 +61,44 @@ class _MapScreenState extends State<MapScreen> {
   LatLng? _currentGps;
   CoordinateFormat _coordFormat = CoordinateFormat.decimal;
 
-  // Inline JSON of the bundled Google-Maps-like style, loaded from assets in
-  // initState. Null while loading — MapScreen falls back to the upstream URL
-  // for the very first frame so the map isn't blank.
+  // Inline JSON of the offline style — sources patched at runtime to point at
+  // the local BundledBasemapServer that reads from the Planetiler-generated
+  // MBTiles. Null while loading or if the bundled asset is missing; in that
+  // case MapScreen shows a clear status message instead of a blank map.
   String? _renderStyleJson;
+  bool _basemapMissing = false;
 
   @override
   void initState() {
     super.initState();
     _loadCoordFormat();
     _loadRenderStyle();
+    // Warm up the place index in the background so the first search isn't the
+    // thing waiting on the one-time MBTiles scan.
+    unawaited(bundledPlaceIndex.warmUp());
     subscriptionService.addListener(_onTierChanged);
   }
 
+  /// Loads the only style the app renders: the offline style backed by the
+  /// bundled Planetiler-generated MBTiles, served from a local HTTP loopback.
+  /// No upstream HTTP, no MVT streaming, no fallback — if the bundled asset
+  /// is missing, [_basemapMissing] is set and MapScreen surfaces a clear
+  /// status message instead of a blank/broken map.
   Future<void> _loadRenderStyle() async {
-    try {
-      final String s =
-          await TileConfig.forTier(subscriptionService.tier).loadRenderStyle();
-      if (!mounted) return;
-      setState(() => _renderStyleJson = s);
-    } catch (e) {
-      // Asset missing → fall through to the upstream URL.
-      debugPrint('Failed to load bundled style: $e');
+    final String? json = await loadOfflineRenderStyle();
+    if (!mounted) return;
+    if (json == null) {
+      setState(() => _basemapMissing = true);
+      debugPrint(
+        'Bundled basemap missing: run tools/planetiler/generate to produce '
+        'assets/basemap/world.mbtiles, then rebuild.',
+      );
+      return;
     }
+    setState(() {
+      _renderStyleJson = json;
+      _basemapMissing = false;
+    });
   }
 
   void _onTierChanged() {
@@ -971,28 +988,44 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
+    final String? styleJson = _renderStyleJson;
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
-          MapLibreMap(
-            styleString: _renderStyleJson ?? cfg.styleUrl,
-            initialCameraPosition: const CameraPosition(
-              target: _kInitialCenter,
-              zoom: _kInitialZoom,
+          if (styleJson != null)
+            MapLibreMap(
+              styleString: styleJson,
+              initialCameraPosition: const CameraPosition(
+                target: _kInitialCenter,
+                zoom: _kInitialZoom,
+              ),
+              minMaxZoomPreference:
+                  MinMaxZoomPreference(0, cfg.interactiveMaxZoom),
+              onMapCreated: _onMapCreated,
+              onStyleLoadedCallback: _registerMarkPin,
+              onMapClick: _onMapClick,
+              trackCameraPosition: true,
+              compassEnabled: false,
+              myLocationEnabled: true,
+              myLocationRenderMode: MyLocationRenderMode.normal,
+              myLocationTrackingMode: MyLocationTrackingMode.none,
+              rotateGesturesEnabled: true,
+              tiltGesturesEnabled: true,
+            )
+          else if (_basemapMissing)
+            const _BasemapMissingPanel()
+          else
+            const ColoredBox(
+              color: TacticalPalette.panel,
+              child: Center(
+                child: SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
             ),
-            minMaxZoomPreference: MinMaxZoomPreference(0, cfg.interactiveMaxZoom),
-            onMapCreated: _onMapCreated,
-            onStyleLoadedCallback: _registerMarkPin,
-            onMapClick: _onMapClick,
-            trackCameraPosition: true,
-            compassEnabled: false,
-            myLocationEnabled: true,
-            myLocationRenderMode: MyLocationRenderMode.normal,
-            myLocationTrackingMode: MyLocationTrackingMode.none,
-            rotateGesturesEnabled: true,
-            tiltGesturesEnabled: true,
-          ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -1077,6 +1110,52 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Shown when the Planetiler-generated `assets/basemap/world.mbtiles` is
+/// missing — the app renders only from that file, so we can't show a map
+/// until it's built. Tells the dev what to run.
+class _BasemapMissingPanel extends StatelessWidget {
+  const _BasemapMissingPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: TacticalPalette.panel,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.map_outlined, size: 48, color: TacticalPalette.accent),
+              const SizedBox(height: 16),
+              const Text(
+                'Basemap not built yet',
+                style: TextStyle(
+                  color: TacticalPalette.textPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Generate the bundled MBTiles before launching:\n'
+                'cd tools/planetiler && ./generate.ps1',
+                style: TextStyle(
+                  color: TacticalPalette.textPrimary,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
