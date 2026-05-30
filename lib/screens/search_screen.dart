@@ -11,6 +11,7 @@ import '../services/offline_repository.dart';
 import '../services/offline_search_index.dart';
 import '../services/recent_searches.dart';
 import '../services/subscription_service.dart';
+import '../util/coordinate_parser.dart';
 import '../util/tile_math.dart';
 import 'plans_screen.dart';
 
@@ -172,6 +173,19 @@ class _SearchScreenState extends State<SearchScreen> {
       _loading = true;
       _error = null;
     });
+    // Short-circuit: if the input parses as coordinates, treat the whole
+    // query as a "go to these coords" request and skip the network search.
+    // This is the reverse of the coord card on the map.
+    final CoordinateMatch? coords = CoordinateParser.tryParse(query);
+    if (coords != null) {
+      final Place coordsPlace = _coordinatePlace(coords);
+      if (!mounted || seq != _requestSeq) return;
+      setState(() {
+        _searchResults = <Place>[coordsPlace];
+        _loading = false;
+      });
+      return;
+    }
     try {
       final List<Place> results = await _nominatim.search(query);
       if (!mounted || seq != _requestSeq) return;
@@ -383,7 +397,25 @@ class _SearchScreenState extends State<SearchScreen> {
           return _buildRecentList();
         }
         return const Center(
-          child: Text('Type to search places', style: TextStyle(color: Colors.black54)),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  'Type to search places',
+                  style: TextStyle(color: Colors.black54),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'Or paste coordinates — e.g.  43.74, 7.42  or  '
+                  '43°44\'N 7°25\'E',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.black38, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
         );
       }
     } else if (_downloadedLoading) {
@@ -572,6 +604,24 @@ class _SearchScreenState extends State<SearchScreen> {
         SnackBar(content: Text('Delete failed: $e')),
       );
     }
+  }
+
+  /// Wraps a parsed coordinate as a Place so the existing pop-result flow
+  /// can fly the camera there. We synthesize a tiny bbox around the point
+  /// because the map-screen camera animation accepts bounds rather than a
+  /// single point.
+  Place _coordinatePlace(CoordinateMatch m) {
+    const double pad = 0.005; // ~500 m at the equator
+    return Place(
+      name:
+          '${m.lat.toStringAsFixed(5)}°, ${m.lon.toStringAsFixed(5)}°',
+      subtitle: '${m.formatLabel} coordinates',
+      center: LatLng(m.lat, m.lon),
+      bbox: LatLngBounds(
+        southwest: LatLng(m.lat - pad, m.lon - pad),
+        northeast: LatLng(m.lat + pad, m.lon + pad),
+      ),
+    );
   }
 
   // Pin a synthetic whole-country Place on top of Nominatim's results when
