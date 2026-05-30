@@ -120,19 +120,19 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _rotationLocked = locked);
   }
 
+  /// Single entry point for the compass FAB. Toggles the north-up lock:
+  /// locking also snaps the camera to bearing 0 + tilt 0 so "north up" is
+  /// immediate; unlocking just frees gestures and leaves the camera alone.
   Future<void> _toggleRotationLock() async {
     final bool next = !_rotationLocked;
     setState(() => _rotationLocked = next);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kRotationLockPrefKey, next);
-    // When turning the lock on, snap the camera to north-up + flat so the
-    // user gets the expected result immediately. Turning off doesn't move
-    // the camera — gestures just become available again.
     if (next) {
       await _onResetBearing();
     }
     if (!mounted) return;
-    _showTopToast(next ? 'Rotation locked' : 'Rotation unlocked');
+    _showTopToast(next ? 'North-up lock on' : 'North-up lock off');
   }
 
   final List<Symbol> _markSymbols = <Symbol>[];
@@ -1203,23 +1203,10 @@ class _MapScreenState extends State<MapScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CompassFab(bearing: _bearing, onTap: _onResetBearing),
-                  const SizedBox(height: 10),
-                  FloatingActionButton.small(
-                    heroTag: 'rotation-lock-fab',
-                    onPressed: _toggleRotationLock,
-                    tooltip: _rotationLocked
-                        ? 'Unlock map rotation'
-                        : 'Lock map to north up',
-                    backgroundColor: _rotationLocked
-                        ? TacticalPalette.accent
-                        : null,
-                    foregroundColor: _rotationLocked ? Colors.white : null,
-                    child: Icon(
-                      _rotationLocked
-                          ? Icons.screen_lock_rotation
-                          : Icons.screen_rotation_outlined,
-                    ),
+                  CompassFab(
+                    bearing: _bearing,
+                    locked: _rotationLocked,
+                    onTap: _toggleRotationLock,
                   ),
                   const SizedBox(height: 10),
                   FloatingActionButton(
