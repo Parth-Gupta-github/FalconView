@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -80,7 +81,7 @@ class _PaymentScreenState extends State<PaymentScreen>
           title: const Text('Complete purchase'),
           leading: const BackButton(),
         ),
-        body: Stack(
+        body: _webWidthCap(child: Stack(
           children: [
             ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
@@ -144,7 +145,20 @@ class _PaymentScreenState extends State<PaymentScreen>
               ),
             ),
           ],
-        ),
+        )),
+      ),
+    );
+  }
+
+  /// On web, cap the body at 560 px and center it so we don't get a giant
+  /// edge-to-edge checkout sheet on desktop. No-op on mobile.
+  Widget _webWidthCap({required Widget child}) {
+    if (!kIsWeb) return child;
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: child,
       ),
     );
   }

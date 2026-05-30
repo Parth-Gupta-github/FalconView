@@ -4,6 +4,7 @@ import 'dart:math' show Point;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
@@ -999,7 +1000,18 @@ class _MapScreenState extends State<MapScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  SearchCard(onTap: _openSearch),
+                  // Cap the search bar on web so it doesn't stretch across a
+                  // 1920 px monitor. On mobile this is a no-op.
+                  kIsWeb
+                      ? Align(
+                          alignment: Alignment.centerLeft,
+                          child: ConstrainedBox(
+                            constraints:
+                                const BoxConstraints(maxWidth: 480),
+                            child: SearchCard(onTap: _openSearch),
+                          ),
+                        )
+                      : SearchCard(onTap: _openSearch),
                   const SizedBox(height: 10),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,

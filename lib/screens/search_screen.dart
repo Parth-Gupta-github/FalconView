@@ -232,7 +232,13 @@ class _SearchScreenState extends State<SearchScreen> {
         elevation: 0,
         scrolledUnderElevation: 1,
       ),
-      body: Column(
+      body: Align(
+        alignment: Alignment.topCenter,
+        // Cap the column width on wide viewports (web / desktop) — full-width
+        // on phones since they're narrower than the cap anyway.
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
@@ -281,6 +287,8 @@ class _SearchScreenState extends State<SearchScreen> {
           const Divider(height: 1),
           Expanded(child: _buildBody(isSearch, rows, hasQuery)),
         ],
+          ),
+        ),
       ),
     );
   }

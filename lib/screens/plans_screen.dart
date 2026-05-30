@@ -65,7 +65,12 @@ class _PlansScreenState extends State<PlansScreen> {
         title: const Text('Plans'),
         leading: const BackButton(),
       ),
-      body: ListView(
+      body: Align(
+        alignment: Alignment.topCenter,
+        // Cap content width on web/desktop; transparent on mobile.
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
         children: [
           _CurrentPlanBanner(tier: current),
@@ -96,6 +101,8 @@ class _PlansScreenState extends State<PlansScreen> {
             onSelect: () => _selectTier(AppTier.pro),
           ),
         ],
+          ),
+        ),
       ),
     );
   }
