@@ -49,3 +49,10 @@ app.*.map.json
 /assets/basemap/*.mbtiles
 /tools/planetiler/.cache/
 /tools/planetiler/*.jar
+
+# Glyph PBFs and sprite atlas fetched by tools/glyphs/fetch and
+# tools/sprite/fetch. Small (~1 MB total) but derived from OpenFreeMap —
+# devs fetch them locally. The .gitkeep files keep the directory layout.
+/assets/glyphs/**/*.pbf
+/assets/sprite/*.png
+/assets/sprite/*.json

@@ -102,20 +102,46 @@ class BundledBasemapServer {
   static final RegExp _tilePathRegex =
       RegExp(r'^/(\d+)/(\d+)/(\d+)\.(?:pbf|mvt)$');
 
+  // Glyph PBFs: /fonts/<fontstack>/<range>.pbf — fontstack may contain spaces
+  // (URL-encoded as %20) and commas (font fallback chain).
+  static final RegExp _glyphPathRegex =
+      RegExp(r'^/fonts/(.+?)/(-?\d+-\d+)\.pbf$');
+
+  // Sprite assets: /sprite[/liberty]<@2x>.<png|json>. MapLibre asks for the
+  // base prefix and appends @2x.png / .json at runtime.
+  static final RegExp _spritePathRegex =
+      RegExp(r'^/sprite(?:/[^/]+)?(@2x)?\.(png|json)$');
+
   Future<void> _handleRequest(HttpRequest req) async {
     try {
       if (req.method != 'GET' && req.method != 'HEAD') {
         await _respond(req, HttpStatus.methodNotAllowed);
         return;
       }
-      final RegExpMatch? m = _tilePathRegex.firstMatch(req.uri.path);
-      if (m == null) {
+      final String path = req.uri.path;
+      // Route order matters: glyphs and sprites are checked BEFORE tiles
+      // because the tile regex is greedy on /\d+/\d+/\d+\.pbf and would
+      // never collide, but explicit ordering keeps the intent obvious.
+      final RegExpMatch? glyphMatch = _glyphPathRegex.firstMatch(path);
+      if (glyphMatch != null) {
+        await _serveGlyph(req, glyphMatch.group(1)!, glyphMatch.group(2)!);
+        return;
+      }
+      final RegExpMatch? spriteMatch = _spritePathRegex.firstMatch(path);
+      if (spriteMatch != null) {
+        final bool isHiDpi = spriteMatch.group(1) == '@2x';
+        final String ext = spriteMatch.group(2)!;
+        await _serveSprite(req, isHiDpi: isHiDpi, ext: ext);
+        return;
+      }
+      final RegExpMatch? tileMatch = _tilePathRegex.firstMatch(path);
+      if (tileMatch == null) {
         await _respond(req, HttpStatus.notFound);
         return;
       }
-      final int z = int.parse(m.group(1)!);
-      final int x = int.parse(m.group(2)!);
-      final int y = int.parse(m.group(3)!);
+      final int z = int.parse(tileMatch.group(1)!);
+      final int x = int.parse(tileMatch.group(2)!);
+      final int y = int.parse(tileMatch.group(3)!);
       // MBTiles spec uses TMS scheme — flip Y from XYZ to TMS.
       final int tmsY = ((1 << z) - 1) - y;
 
@@ -152,6 +178,73 @@ class BundledBasemapServer {
       try {
         await _respond(req, HttpStatus.internalServerError);
       } catch (_) {}
+    }
+  }
+
+  /// Serves a glyph PBF from `assets/glyphs/<fontstack>/<range>.pbf`.
+  ///
+  /// MapLibre's `fontstack` can be a comma-separated fallback chain
+  /// (e.g. "Noto Sans Regular,Noto Sans Italic"). We try each font in order
+  /// and return the first one whose asset exists. Returns 204 if none do
+  /// so MapLibre fallback to a default font without retrying.
+  Future<void> _serveGlyph(
+    HttpRequest req,
+    String rawFontstack,
+    String range,
+  ) async {
+    final List<String> fonts =
+        Uri.decodeComponent(rawFontstack).split(',').map((s) => s.trim()).toList();
+    for (final String font in fonts) {
+      final String assetPath = 'assets/glyphs/$font/$range.pbf';
+      try {
+        final ByteData bd = await rootBundle.load(assetPath);
+        final Uint8List bytes = bd.buffer.asUint8List(
+          bd.offsetInBytes,
+          bd.lengthInBytes,
+        );
+        req.response
+          ..statusCode = HttpStatus.ok
+          ..headers.set('Content-Type', 'application/x-protobuf')
+          ..headers.set('Cache-Control', 'public, max-age=2592000')
+          ..headers.set('Access-Control-Allow-Origin', '*');
+        if (req.method == 'GET') req.response.add(bytes);
+        await req.response.close();
+        return;
+      } catch (_) {
+        // Not bundled, try next font in the fallback chain.
+      }
+    }
+    // Nothing matched — 204 so MapLibre skips the text rather than retrying.
+    await _respond(req, HttpStatus.noContent);
+  }
+
+  /// Serves a sprite asset (PNG or JSON, 1× or 2×) from `assets/sprite/`.
+  /// MapLibre requests sprites at startup; missing assets → 404 so the
+  /// renderer falls back to text-only labels.
+  Future<void> _serveSprite(
+    HttpRequest req, {
+    required bool isHiDpi,
+    required String ext,
+  }) async {
+    final String suffix = isHiDpi ? '@2x' : '';
+    final String assetPath = 'assets/sprite/liberty$suffix.$ext';
+    try {
+      final ByteData bd = await rootBundle.load(assetPath);
+      final Uint8List bytes = bd.buffer.asUint8List(
+        bd.offsetInBytes,
+        bd.lengthInBytes,
+      );
+      final String contentType =
+          ext == 'png' ? 'image/png' : 'application/json';
+      req.response
+        ..statusCode = HttpStatus.ok
+        ..headers.set('Content-Type', contentType)
+        ..headers.set('Cache-Control', 'public, max-age=2592000')
+        ..headers.set('Access-Control-Allow-Origin', '*');
+      if (req.method == 'GET') req.response.add(bytes);
+      await req.response.close();
+    } catch (_) {
+      await _respond(req, HttpStatus.notFound);
     }
   }
 
@@ -222,6 +315,13 @@ Future<String?> loadOfflineRenderStyle({
         }
       }
     }
+    // Patch glyphs + sprite URLs at the same origin so MapLibre can fetch
+    // font ranges and POI icons from our localhost server (which falls back
+    // to bundled assets). The style declares them as RUNTIME_PATCHED.
+    final Uri tileUri = Uri.parse(tpl);
+    final String origin = '${tileUri.scheme}://${tileUri.authority}';
+    style['glyphs'] = '$origin/fonts/{fontstack}/{range}.pbf';
+    style['sprite'] = '$origin/sprite/liberty';
     return jsonEncode(style);
   } catch (e) {
     debugPrint('loadOfflineRenderStyle failed: $e');

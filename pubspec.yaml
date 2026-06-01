@@ -92,6 +92,10 @@ flutter:
   assets:
     - assets/styles/
     - assets/basemap/
+    - "assets/glyphs/Noto Sans Regular/"
+    - "assets/glyphs/Noto Sans Italic/"
+    - "assets/glyphs/Noto Sans Bold/"
+    - assets/sprite/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
