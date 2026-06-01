@@ -68,36 +68,27 @@ param(
     [string]$OsmUrl = ""
 )
 
-# City-level presets. Each preset resolves a friendly name to a Geofabrik
-# STATE-level extract URL + a city bbox. State-level PBFs are 10-15× smaller
-# than country PBFs (Madhya Pradesh ~100 MB vs India ~1.6 GB) so the dev
-# download and build time drop dramatically — but the final MBTiles size
-# (what the phone bundles) is the same because we still clip with --bounds.
+# City-level presets. Each preset resolves a friendly name to (a Geofabrik
+# extract name, a city bbox). We use whole-country extracts because
+# Geofabrik does not publish state-level extracts for India — the OSM PBF
+# is 1.6 GB but Planetiler clips the OUTPUT to the bbox, so the final
+# MBTiles bundled into the APK is still small (~30-80 MB per city).
+#
+# The 1.6 GB download is cached after the first run — subsequent builds
+# (e.g. switching from indore to bhopal) reuse it without re-downloading.
 $presets = @{
-    "indore" = @{
-        osmUrl = "https://download.geofabrik.de/asia/india/madhya-pradesh-latest.osm.pbf";
-        bounds = "75.37,22.27,76.35,23.17"
-    }
-    "bhopal" = @{
-        osmUrl = "https://download.geofabrik.de/asia/india/madhya-pradesh-latest.osm.pbf";
-        bounds = "77.15,23.05,77.65,23.42"
-    }
-    "delhi" = @{
-        osmUrl = "https://download.geofabrik.de/asia/india/delhi-latest.osm.pbf";
-        bounds = "76.84,28.40,77.35,28.88"
-    }
-    "mumbai" = @{
-        osmUrl = "https://download.geofabrik.de/asia/india/maharashtra-latest.osm.pbf";
-        bounds = "72.77,18.89,73.00,19.27"
-    }
+    "indore" = @{ source = "india"; bounds = "75.37,22.27,76.35,23.17" }
+    "bhopal" = @{ source = "india"; bounds = "77.15,23.05,77.65,23.42" }
+    "delhi"  = @{ source = "india"; bounds = "76.84,28.40,77.35,28.88" }
+    "mumbai" = @{ source = "india"; bounds = "72.77,18.89,73.00,19.27" }
 }
 $presetKey = $Area.ToLower()
 if ($presets.ContainsKey($presetKey)) {
     $preset = $presets[$presetKey]
-    if ([string]::IsNullOrEmpty($OsmUrl)) { $OsmUrl = $preset.osmUrl }
+    $Area   = $preset.source
     if ([string]::IsNullOrEmpty($Bounds)) { $Bounds = $preset.bounds }
     Write-Host "Preset '$presetKey' resolved:"
-    Write-Host "  osm-url: $OsmUrl"
+    Write-Host "  area:    $Area"
     Write-Host "  bounds:  $Bounds"
 }
 
