@@ -23,25 +23,46 @@ if (-not (Test-Path $outDir)) {
     New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 }
 
-$baseUrl = "https://tiles.openfreemap.org/sprites/v1/liberty"
-$files = @(
-    "liberty.png",
-    "liberty.json",
-    "liberty@2x.png",
-    "liberty@2x.json"
+# OpenFreeMap's current sprite path (as of June 2026) is
+# /sprites/<hashed-version>/ofm, NOT /sprites/v1/liberty. The hash bumps
+# whenever they regenerate the sprite, so we fetch the live style.json to
+# learn the current URL instead of hard-coding it.
+$styleUrl = "https://tiles.openfreemap.org/styles/liberty"
+$baseUrl  = $null
+try {
+    $styleJson = Invoke-RestMethod -Uri $styleUrl -UseBasicParsing
+    if ($styleJson.sprite) {
+        $baseUrl = [string]$styleJson.sprite
+        Write-Host "Resolved sprite base URL: $baseUrl"
+    }
+} catch {
+    Write-Host "Could not fetch live style: $_" -ForegroundColor Yellow
+}
+if (-not $baseUrl) {
+    # Fallback to a known-good URL from a recent style snapshot. If this 404s,
+    # OpenFreeMap rotated the hash again — fetch the style URL manually.
+    $baseUrl = "https://tiles.openfreemap.org/sprites/ofm_f384/ofm"
+    Write-Host "Using fallback sprite URL: $baseUrl"
+}
+
+# We download with whatever the upstream file names are (e.g. "ofm.png") but
+# save locally as "liberty.<ext>" so the in-app server + offline style can
+# reference a stable name regardless of OpenFreeMap's renaming.
+$variants = @(
+    @{ remote = "";      local = "liberty.png" ; ext = "png"  },
+    @{ remote = "";      local = "liberty.json"; ext = "json" },
+    @{ remote = "@2x";   local = "liberty@2x.png" ; ext = "png"  },
+    @{ remote = "@2x";   local = "liberty@2x.json"; ext = "json" }
 )
 
 Write-Host "Downloading Liberty sprite into: $outDir"
 Write-Host ""
 
 $totalBytes = 0
-foreach ($name in $files) {
-    # OpenFreeMap publishes them at /sprites/v1/liberty (no suffix), /liberty.png,
-    # /liberty.json, /liberty@2x.png, /liberty@2x.json. The base URL is the
-    # liberty prefix; we splice the rest in.
-    $suffix = $name -replace '^liberty', ''
-    $url    = "$baseUrl$suffix"
-    $dest   = Join-Path $outDir $name
+foreach ($v in $variants) {
+    $name = $v.local
+    $url  = "$baseUrl$($v.remote).$($v.ext)"
+    $dest = Join-Path $outDir $name
     if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) {
         Write-Host "cached  $name"
         $totalBytes += (Get-Item $dest).Length
