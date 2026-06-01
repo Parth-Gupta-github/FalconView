@@ -68,11 +68,11 @@ foreach ($font in $Fonts) {
         $url      = "$baseUrl/$fontEncoded/$range.pbf"
         $destFile = Join-Path $fontDir "$range.pbf"
         if ((Test-Path $destFile) -and ((Get-Item $destFile).Length -gt 0)) {
-            Write-Host "[$done/$total] ✓ cached  $font $range.pbf"
+            Write-Host "[$done/$total] cached  $font $range.pbf"
             $totalBytes += (Get-Item $destFile).Length
             continue
         }
-        Write-Host -NoNewline "[$done/$total] ↓ $font $range.pbf ... "
+        Write-Host -NoNewline "[$done/$total] fetching $font $range.pbf ... "
         try {
             Invoke-WebRequest -Uri $url -OutFile $destFile -UseBasicParsing
             $sizeKb = [math]::Round((Get-Item $destFile).Length / 1KB, 1)

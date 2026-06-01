@@ -43,11 +43,11 @@ foreach ($name in $files) {
     $url    = "$baseUrl$suffix"
     $dest   = Join-Path $outDir $name
     if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) {
-        Write-Host "✓ cached  $name"
+        Write-Host "cached  $name"
         $totalBytes += (Get-Item $dest).Length
         continue
     }
-    Write-Host -NoNewline "↓ $name ... "
+    Write-Host -NoNewline "fetching $name ... "
     try {
         Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
         $sizeKb = [math]::Round((Get-Item $dest).Length / 1KB, 1)
