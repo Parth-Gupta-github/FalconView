@@ -12,6 +12,7 @@ import 'package:vector_tile/vector_tile.dart';
 
 import '../models/place.dart';
 import '../util/tile_math.dart';
+import 'mbtiles_tile_source.dart';
 import 'offline_router.dart';
 
 class OfflineIndexException implements Exception {
@@ -235,6 +236,111 @@ class OfflineSearchIndex {
       );
     } catch (e, s) {
       debugPrint('MVT extract failed: $e\n$s');
+    }
+
+    await outDb.close();
+    onProgress?.call(100);
+    return IndexBuildStats(
+      source: inserted > 0 ? PoiSource.mvt : PoiSource.none,
+      tilesScanned: scanned,
+      poisInserted: inserted,
+    );
+  }
+
+  /// Same output as [build] (per-region POI + road-graph DB) but reads tiles
+  /// from a local `.mbtiles` file instead of the network — no HTTP at all.
+  /// Tiles are processed in pages to bound memory on large files.
+  Future<IndexBuildStats> buildFromMbtiles(
+    int regionId,
+    MbtilesTileSource source, {
+    void Function(double percent)? onProgress,
+    bool Function(double lat, double lon)? contains,
+  }) async {
+    onProgress?.call(0);
+    await _evict(regionId);
+    final File outFile = await _dbFileFor(regionId);
+    if (await outFile.exists()) await outFile.delete();
+    final Database outDb = await _openOutDb(outFile);
+    await _router.setupTables(outDb);
+
+    int inserted = 0;
+    int scanned = 0;
+    int roadSegments = 0;
+    final Set<int> seenNodes = <int>{};
+    final Set<int> seenEdges = <int>{};
+    try {
+      final int total = await source.tileCount(_zMin, _zMax);
+      int done = 0;
+
+      Batch poiBatch = outDb.batch();
+      Batch nodeBatch = outDb.batch();
+      Batch edgeBatch = outDb.batch();
+      int poiPending = 0;
+      int nodePending = 0;
+      int edgePending = 0;
+      Future<void> flush({bool force = false}) async {
+        if (force || poiPending >= _chunkSize) {
+          await poiBatch.commit(noResult: true, continueOnError: true);
+          poiBatch = outDb.batch();
+          poiPending = 0;
+        }
+        if (force || nodePending >= _chunkSize) {
+          await nodeBatch.commit(noResult: true, continueOnError: true);
+          nodeBatch = outDb.batch();
+          nodePending = 0;
+        }
+        if (force || edgePending >= _chunkSize) {
+          await edgeBatch.commit(noResult: true, continueOnError: true);
+          edgeBatch = outDb.batch();
+          edgePending = 0;
+        }
+      }
+
+      const int pageSize = 256;
+      for (int z = _zMin; z <= _zMax; z++) {
+        int offset = 0;
+        while (true) {
+          final List<MbtilesTile> page =
+              await source.tilePage(z, pageSize, offset);
+          if (page.isEmpty) break;
+          for (final MbtilesTile t in page) {
+            scanned++;
+            done++;
+            if (t.bytes.isEmpty) continue;
+            final int added =
+                _extractFromTile(poiBatch, t.bytes, z, t.x, t.y, contains);
+            inserted += added;
+            poiPending += added;
+            if (z >= 13) {
+              roadSegments += _router.extractFromTile(
+                bytes: t.bytes,
+                z: z,
+                x: t.x,
+                y: t.y,
+                seenNodes: seenNodes,
+                seenEdges: seenEdges,
+                nodeBatch: nodeBatch,
+                edgeBatch: edgeBatch,
+                addedNodes: (int n) => nodePending += n,
+                addedEdges: (int n) => edgePending += n,
+                contains: contains,
+              );
+            }
+          }
+          await flush();
+          if (total > 0) onProgress?.call(done / total * 95);
+          if (page.length < pageSize) break;
+          offset += pageSize;
+        }
+      }
+      await flush(force: true);
+      debugPrint(
+        'MBTiles extract: scanned $scanned tiles, '
+        '$inserted POIs, ${seenNodes.length} road nodes, '
+        '$roadSegments road segments',
+      );
+    } catch (e, s) {
+      debugPrint('MBTiles extract failed: $e\n$s');
     }
 
     await outDb.close();

@@ -14,7 +14,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
+import '../services/local_tile_server.dart';
 import '../services/location_service.dart';
+import '../services/offline_map_style.dart';
 import '../services/offline_repository.dart';
 import '../services/offline_search_index.dart';
 import '../services/routing_service.dart';
@@ -68,6 +70,13 @@ class _MapScreenState extends State<MapScreen> {
   // for the very first frame so the map isn't blank.
   String? _renderStyleJson;
 
+  // Offline rendering: a localhost server streams tiles out of imported
+  // .mbtiles, and this style points MapLibre at it. When set, it takes
+  // precedence over the online style so the basemap is drawn from MBTiles
+  // with no network. Null when no region has been imported yet.
+  final LocalTileServer _tileServer = LocalTileServer();
+  String? _offlineStyleJson;
+
   // When true, the map ignores rotate + tilt gestures and is kept snapped to
   // north-up flat. Persisted so the choice survives an app restart. Useful
   // for tactical use where users want bearings on the map to stay aligned
@@ -80,7 +89,28 @@ class _MapScreenState extends State<MapScreen> {
     _loadCoordFormat();
     _loadRotationLock();
     _loadRenderStyle();
+    _initOfflineMap();
     subscriptionService.addListener(_onTierChanged);
+  }
+
+  /// Starts the local tile server and, if any MBTiles regions are imported,
+  /// switches the basemap to render from them (offline). Safe to call again
+  /// after an import to pick up newly added regions.
+  Future<void> _initOfflineMap() async {
+    if (kIsWeb) return;
+    try {
+      await _tileServer.start();
+      final List<String> paths = await _offline.registeredMbtilesPaths();
+      await _tileServer.setSources(paths);
+      if (!mounted) return;
+      setState(() {
+        _offlineStyleJson = paths.isEmpty
+            ? null
+            : buildOfflineStyle(_tileServer.tileUrlTemplate);
+      });
+    } catch (e) {
+      debugPrint('Offline map init failed: $e');
+    }
   }
 
   Future<void> _loadRenderStyle() async {
@@ -223,6 +253,7 @@ class _MapScreenState extends State<MapScreen> {
     _controller?.removeListener(_onControllerChanged);
     _controller?.onSymbolTapped.remove(_onSymbolTapped);
     subscriptionService.removeListener(_onTierChanged);
+    _tileServer.stop();
     super.dispose();
   }
 
@@ -1115,7 +1146,8 @@ class _MapScreenState extends State<MapScreen> {
         fit: StackFit.expand,
         children: [
           MapLibreMap(
-            styleString: _renderStyleJson ?? cfg.styleUrl,
+            // Imported MBTiles (offline) take precedence over the online style.
+            styleString: _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl,
             initialCameraPosition: const CameraPosition(
               target: _kInitialCenter,
               zoom: _kInitialZoom,
