@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The offline basemap is served by an in-app HTTP tile server bound to
+  127.0.0.1 (see LocalTileServer). Android blocks cleartext HTTP by default on
+  API 28+, which would stop MapLibre from loading those local tiles in release
+  builds. Permit cleartext to loopback only — everything else stays HTTPS-only.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

@@ -15,6 +15,9 @@ String buildOfflineStyle(String tileUrlTemplate) {
         'tiles': <String>[tileUrlTemplate],
         'minzoom': 0,
         'maxzoom': 14,
+        // OSM/ODbL attribution surfaced through MapLibre's attribution control.
+        'attribution':
+            '© OpenStreetMap contributors · OpenMapTiles · Planetiler',
       },
     },
     'layers': <Map<String, dynamic>>[
