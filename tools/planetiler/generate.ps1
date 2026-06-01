@@ -202,6 +202,14 @@ Write-Host "  free space: $freeGB GB available, ~$required GB required"
 Write-Host "  heap:       $Memory"
 Write-Host ""
 
+# Route ALL Planetiler scratch + downloaded sources onto WorkDir so we don't
+# touch C: at all. Has to happen BEFORE we derive the per-URL osm_path below,
+# since that path is built off $downloadDir.
+$tmpDir      = Join-Path $WorkDir "tmp"
+$downloadDir = Join-Path $WorkDir "sources"
+if (-not (Test-Path $tmpDir))      { New-Item -ItemType Directory -Path $tmpDir      -Force | Out-Null }
+if (-not (Test-Path $downloadDir)) { New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null }
+
 # Decide how Planetiler should locate the OSM PBF, in priority order:
 #   1. -OsmUrl explicit → --download with that URL, AND a per-URL osm_path
 #      so the download doesn't collide with the default ".../monaco.osm.pbf"
@@ -223,13 +231,6 @@ if (-not [string]::IsNullOrEmpty($OsmUrl)) {
     $extraArgs += "--download"
     $extraArgs += "--area=$Area"
 }
-
-# Route ALL Planetiler scratch + downloaded sources onto WorkDir so we don't
-# touch C: at all.
-$tmpDir      = Join-Path $WorkDir "tmp"
-$downloadDir = Join-Path $WorkDir "sources"
-if (-not (Test-Path $tmpDir))      { New-Item -ItemType Directory -Path $tmpDir      -Force | Out-Null }
-if (-not (Test-Path $downloadDir)) { New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null }
 
 $javaArgs = @(
     "-Xmx$Memory"
