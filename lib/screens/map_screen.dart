@@ -18,6 +18,7 @@ import '../services/local_tile_server.dart';
 import '../services/location_service.dart';
 import '../services/offline_map_style.dart';
 import '../services/offline_repository.dart';
+import '../services/satellite_style.dart';
 import '../services/offline_search_index.dart';
 import '../services/routing_service.dart';
 import '../services/subscription_service.dart';
@@ -38,6 +39,7 @@ const LatLng _kInitialCenter = LatLng(22.7196, 75.8577);
 const double _kInitialZoom = 11;
 const String _kCoordFormatPrefKey = 'coord_format';
 const String _kRotationLockPrefKey = 'map_rotation_locked';
+const String _kSatelliteBasemapPrefKey = 'basemap_satellite';
 
 const String _kRulerSourceId = 'ruler-src';
 const String _kRulerLayerId = 'ruler-layer';
@@ -83,11 +85,16 @@ class _MapScreenState extends State<MapScreen> {
   // with cardinal directions.
   bool _rotationLocked = false;
 
+  bool _satelliteBasemap = false;
+  bool _satelliteLayerAdded = false;
+  Set<String> _baseLayerIds = <String>{};
+
   @override
   void initState() {
     super.initState();
     _loadCoordFormat();
     _loadRotationLock();
+    _loadSatelliteBasemap();
     _loadRenderStyle();
     _initOfflineMap();
     subscriptionService.addListener(_onTierChanged);
@@ -126,7 +133,13 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _onTierChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    final bool shouldShow =
+        _satelliteBasemap && subscriptionService.tier == AppTier.pro;
+    if (shouldShow != _satelliteLayerAdded) {
+      unawaited(_applySatellite(shouldShow));
+    }
   }
 
   Future<void> _loadCoordFormat() async {
@@ -163,6 +176,82 @@ class _MapScreenState extends State<MapScreen> {
     }
     if (!mounted) return;
     _showTopToast(next ? 'North-up lock on' : 'North-up lock off');
+  }
+
+  Future<void> _loadSatelliteBasemap() async {
+    final prefs = await SharedPreferences.getInstance();
+    final bool on = prefs.getBool(_kSatelliteBasemapPrefKey) ?? false;
+    if (!mounted) return;
+    setState(() => _satelliteBasemap = on);
+  }
+
+  Future<void> _toggleSatelliteBasemap() async {
+    if (subscriptionService.tier != AppTier.pro) {
+      _showTopToast(
+        'Satellite view is a Pro feature. Enable Pro in Plans.',
+        error: true,
+      );
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const PlansScreen()),
+      );
+      return;
+    }
+    final bool next = !_satelliteBasemap;
+    setState(() => _satelliteBasemap = next);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kSatelliteBasemapPrefKey, next);
+    await _applySatellite(next);
+    if (!mounted) return;
+    _showTopToast(next ? 'Satellite view on' : 'Satellite view off');
+  }
+
+  static const String _kSatelliteSourceId = 'sat-esri-src';
+  static const String _kSatelliteLayerId = 'sat-esri-layer';
+
+  Future<void> _applySatellite(bool on) async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    try {
+      if (on && !_satelliteLayerAdded) {
+        await c.addSource(
+          _kSatelliteSourceId,
+          RasterSourceProperties(
+            tiles: <String>[kEsriWorldImageryTileUrl],
+            tileSize: 256,
+            minzoom: 0,
+            maxzoom: kEsriMaxZoom,
+            attribution: kEsriWorldImageryAttribution,
+          ),
+        );
+        final String? below = await _firstOverlayLayerId();
+        await c.addRasterLayer(
+          _kSatelliteSourceId,
+          _kSatelliteLayerId,
+          const RasterLayerProperties(),
+          belowLayerId: below,
+        );
+        _satelliteLayerAdded = true;
+      } else if (!on && _satelliteLayerAdded) {
+        await c.removeLayer(_kSatelliteLayerId);
+        await c.removeSource(_kSatelliteSourceId);
+        _satelliteLayerAdded = false;
+      }
+    } catch (e) {
+      debugPrint('Satellite layer toggle failed: $e');
+    }
+  }
+
+  Future<String?> _firstOverlayLayerId() async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return null;
+    if (_baseLayerIds.isEmpty) return null;
+    final List<dynamic> ids = await c.getLayerIds();
+    for (final dynamic id in ids) {
+      final String s = id.toString();
+      if (s == _kSatelliteLayerId) continue;
+      if (!_baseLayerIds.contains(s)) return s;
+    }
+    return null;
   }
 
   final List<Symbol> _markSymbols = <Symbol>[];
@@ -705,6 +794,22 @@ class _MapScreenState extends State<MapScreen> {
     _setStatusMessage('Markers: ${_markSymbols.length}');
   }
 
+  Future<void> _onStyleLoaded() async {
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    try {
+      final List<dynamic> ids = await c.getLayerIds();
+      _baseLayerIds = ids.map((dynamic e) => e.toString()).toSet();
+    } catch (_) {
+      _baseLayerIds = <String>{};
+    }
+    _satelliteLayerAdded = false;
+    await _registerMarkPin();
+    if (_satelliteBasemap && subscriptionService.tier == AppTier.pro) {
+      await _applySatellite(true);
+    }
+  }
+
   Future<void> _registerMarkPin() async {
     final MapLibreMapController? c = _controller;
     if (c == null || _markPinReady) return;
@@ -1141,12 +1246,16 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
+    // Satellite is Pro-only, so a persisted preference is ignored for free
+    // users (e.g. after a downgrade). When active it overrides every other
+    // basemap; otherwise imported MBTiles (offline) take precedence.
+    final bool satelliteActive =
+        _satelliteBasemap && subscriptionService.tier == AppTier.pro;
     final Widget scaffold = Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
           MapLibreMap(
-            // Imported MBTiles (offline) take precedence over the online style.
             styleString: _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl,
             initialCameraPosition: const CameraPosition(
               target: _kInitialCenter,
@@ -1154,7 +1263,7 @@ class _MapScreenState extends State<MapScreen> {
             ),
             minMaxZoomPreference: MinMaxZoomPreference(0, cfg.interactiveMaxZoom),
             onMapCreated: _onMapCreated,
-            onStyleLoadedCallback: _registerMarkPin,
+            onStyleLoadedCallback: _onStyleLoaded,
             onMapClick: _onMapClick,
             trackCameraPosition: true,
             compassEnabled: false,
@@ -1239,6 +1348,20 @@ class _MapScreenState extends State<MapScreen> {
                     bearing: _bearing,
                     locked: _rotationLocked,
                     onTap: _toggleRotationLock,
+                  ),
+                  const SizedBox(height: 10),
+                  FloatingActionButton(
+                    heroTag: 'basemap-fab',
+                    tooltip: satelliteActive
+                        ? 'Switch to map view'
+                        : 'Switch to satellite view',
+                    backgroundColor:
+                        satelliteActive ? TacticalPalette.accent : null,
+                    foregroundColor: satelliteActive ? Colors.white : null,
+                    onPressed: _toggleSatelliteBasemap,
+                    child: Icon(
+                      satelliteActive ? Icons.map : Icons.satellite_alt,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   FloatingActionButton(
