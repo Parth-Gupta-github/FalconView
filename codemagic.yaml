@@ -1,0 +1,33 @@
+workflows:
+  macos-unsigned:
+    name: macOS (unsigned)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      flutter: stable
+      xcode: latest
+    scripts:
+      - name: Flutter pub get
+        script: |
+          flutter pub get
+      - name: Enable macOS desktop
+        script: |
+          flutter config --enable-macos-desktop
+      - name: Build macOS (release, no codesign)
+        script: |
+          flutter build macos --release
+      - name: Zip the .app
+        script: |
+          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
+          cd "$(dirname "$APP_PATH")"
+          zip -r -y "$CM_BUILD_DIR/falconview-macos.zip" "$(basename "$APP_PATH")"
+    artifacts:
+      - falconview-macos.zip
+      - build/macos/Build/Products/Release/*.app
+    publishing:
+      email:
+        recipients:
+          - tarun@igismap.com
+        notify:
+          success: true
+          failure: true
