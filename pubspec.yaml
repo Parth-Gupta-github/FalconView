@@ -46,6 +46,8 @@ dependencies:
   collection: ^1.18.0
   vector_tile: ^4.0.0
   archive: ^4.0.7
+  file_picker: ^8.1.2
+  flutter_plugin_android_lifecycle: 2.0.24
 
 
 dev_dependencies:
