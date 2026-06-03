@@ -44,7 +44,11 @@ class _PlansScreenState extends State<PlansScreen> {
       if (paid == true) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Welcome to Pro — offline tools unlocked'),
+            width: 320,
+            content: Text(
+              'Welcome to Pro — offline tools unlocked',
+              textAlign: TextAlign.center,
+            ),
           ),
         );
       }
@@ -53,7 +57,13 @@ class _PlansScreenState extends State<PlansScreen> {
     await subscriptionService.setTier(tier);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${tier.label} plan enabled')),
+      SnackBar(
+        width: 260,
+        content: Text(
+          '${tier.label} plan enabled',
+          textAlign: TextAlign.center,
+        ),
+      ),
     );
   }
 

@@ -276,8 +276,16 @@ class _MapScreenState extends State<MapScreen> {
   Circle? _selectedPlaceHalo;
   Circle? _selectedPlaceDot;
 
-  OverlayEntry? _toastEntry;
+  // General transient toast message, now rendered in the top-right stack
+  // instead of a floating overlay so all chips share one vertical column.
+  String? _toastMessage;
+  bool _toastError = false;
   Timer? _toastTimer;
+
+  // Transient "Zoom: N" badge shown directly under the tier pill (top-right),
+  // separate from the general toast so the two never fight for the same slot.
+  String? _zoomBadge;
+  Timer? _zoomTimer;
 
   String? _statusMessage;
 
@@ -328,15 +336,26 @@ class _MapScreenState extends State<MapScreen> {
     final int level = pos.zoom.round();
     if (_lastToastedZoomLevel != level) {
       _lastToastedZoomLevel = level;
-      _showTopToast('Zoom: $level');
+      _showZoomBadge(level);
     }
+  }
+
+  /// Shows the transient zoom badge under the tier pill, auto-hiding after a
+  /// short delay (same lifetime as the general toast).
+  void _showZoomBadge(int level) {
+    _zoomTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _zoomBadge = 'Zoom: $level');
+    _zoomTimer = Timer(const Duration(milliseconds: 2200), () {
+      if (!mounted) return;
+      setState(() => _zoomBadge = null);
+    });
   }
 
   @override
   void dispose() {
     _toastTimer?.cancel();
-    _toastEntry?.remove();
-    _toastEntry = null;
+    _zoomTimer?.cancel();
     _gpsSub?.cancel();
     _gpsSub = null;
     _controller?.removeListener(_onControllerChanged);
@@ -353,77 +372,49 @@ class _MapScreenState extends State<MapScreen> {
 
   void _showTopToast(String message, {bool error = false}) {
     _toastTimer?.cancel();
-    _toastEntry?.remove();
-    _toastEntry = null;
+    if (!mounted) return;
+    setState(() {
+      _toastMessage = message;
+      _toastError = error;
+    });
+    _toastTimer = Timer(const Duration(milliseconds: 2200), () {
+      if (!mounted) return;
+      setState(() => _toastMessage = null);
+    });
+  }
 
-    final OverlayState? overlay = Overlay.maybeOf(context);
-    if (overlay == null) return;
-    final MediaQueryData mq = MediaQuery.of(context);
-    // Stack from the status bar down: search bar, coord/tier row, optional
-    // pinned status badge. The toast sits below all of it so it never
-    // overlaps the tier pill or the status badge.
-    const double searchBar = 52 + 12;
-    const double coordRow = 72 + 10;
-    final double statusBadge = _statusMessage != null ? 36 + 8 : 0;
-    final double topInset =
-        mq.padding.top + 12 + searchBar + coordRow + statusBadge + 8;
-
-    final OverlayEntry entry = OverlayEntry(
-      builder: (_) => Positioned(
-        top: topInset,
-        right: 16,
-        child: Material(
-          color: Colors.transparent,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: mq.size.width * 0.7),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: TacticalPalette.panel,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: error ? TacticalPalette.error : TacticalPalette.divider,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.1),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    error ? Icons.error_outline : Icons.info_outline,
-                    size: 18,
-                    color: error ? TacticalPalette.error : TacticalPalette.accent,
-                  ),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      message,
-                      style: const TextStyle(
-                        color: TacticalPalette.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+  /// The single vertical stack of status chips, hugging the top-right corner:
+  /// tier pill on top, then (when present) the zoom badge, status badge and the
+  /// transient toast, each stacked directly below the previous.
+  Widget _buildTopRightStack() {
+    return Positioned(
+      top: 0,
+      right: 0,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 12, right: 12, left: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const _TierPill(),
+              if (_zoomBadge != null) ...[
+                const SizedBox(height: 8),
+                _ZoomBadge(message: _zoomBadge!),
+              ],
+              if (_statusMessage != null) ...[
+                const SizedBox(height: 8),
+                _StatusBadge(message: _statusMessage!),
+              ],
+              if (_toastMessage != null) ...[
+                const SizedBox(height: 8),
+                _ToastBadge(message: _toastMessage!, error: _toastError),
+              ],
+            ],
           ),
         ),
       ),
     );
-    _toastEntry = entry;
-    overlay.insert(entry);
-    _toastTimer = Timer(const Duration(milliseconds: 2200), () {
-      _toastEntry?.remove();
-      _toastEntry = null;
-    });
   }
 
   String _formatCoords(LatLng c) =>
@@ -1296,29 +1287,21 @@ class _MapScreenState extends State<MapScreen> {
                         )
                       : SearchCard(onTap: _openSearch),
                   const SizedBox(height: 10),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 260),
-                        child: CoordCard(
-                          coordsText: _formatCoords(_mapCenter),
-                          distanceBearingText: _distanceBearingLine(),
-                          onTap: _onCoordCardTap,
-                          onLongPress: _onCoordCardLongPress,
-                        ),
+                  // Coord card stays on the left; the tier pill, zoom badge,
+                  // status badge and toasts now live in a single vertical stack
+                  // pinned to the top-right corner (see _buildTopRightStack).
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 260),
+                      child: CoordCard(
+                        coordsText: _formatCoords(_mapCenter),
+                        distanceBearingText: _distanceBearingLine(),
+                        onTap: _onCoordCardTap,
+                        onLongPress: _onCoordCardLongPress,
                       ),
-                      const Spacer(),
-                      _TierPill(),
-                    ],
-                  ),
-                  if (_statusMessage != null) ...[
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.topRight,
-                      child: _StatusBadge(message: _statusMessage!),
                     ),
-                  ],
+                  ),
                   if (_mode == MapMode.area) ...[
                     const SizedBox(height: 8),
                     _AreaControlBar(
@@ -1337,6 +1320,9 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
           ),
+          // All status chips/toasts in one vertical stack hugging the top-right
+          // corner: tier pill, then zoom badge, status badge and toast below it.
+          _buildTopRightStack(),
           Positioned(
             right: 16,
             bottom: 96,
@@ -1487,6 +1473,102 @@ class _StatusBadge extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Top-of-screen controls shown while AREA mode is active: a hint + point
+/// count, an undo button, and a download button enabled once the polygon has
+/// at least three vertices.
+/// Compact, transient zoom readout pinned directly under the tier pill.
+class _ZoomBadge extends StatelessWidget {
+  final String message;
+  const _ZoomBadge({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: TacticalPalette.panel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: TacticalPalette.accent.withValues(alpha: 0.5)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.zoom_in, size: 14, color: TacticalPalette.accent),
+          const SizedBox(width: 6),
+          Text(
+            message,
+            style: const TextStyle(
+              color: TacticalPalette.textPrimary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Transient general toast, rendered as a chip in the top-right stack. Wraps
+/// long messages and turns red on error.
+class _ToastBadge extends StatelessWidget {
+  final String message;
+  final bool error;
+  const _ToastBadge({required this.message, this.error = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 280),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: TacticalPalette.panel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: error ? TacticalPalette.error : TacticalPalette.divider,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.1),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              error ? Icons.error_outline : Icons.info_outline,
+              size: 18,
+              color: error ? TacticalPalette.error : TacticalPalette.accent,
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  color: TacticalPalette.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
