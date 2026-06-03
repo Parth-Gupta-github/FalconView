@@ -8,5 +8,8 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Needed for the webview to fetch map tiles over the network in debug. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>

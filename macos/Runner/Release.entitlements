@@ -4,5 +4,14 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- The map renders MapLibre GL JS in a webview, which fetches vector tiles
+	     over HTTPS (OpenFreeMap). Without network.client the sandbox blocks all
+	     outgoing requests and the map is blank. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- The in-app LocalTileServer binds 127.0.0.1 to serve tiles from imported
+	     MBTiles offline; that needs the server entitlement under the sandbox. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 </dict>
 </plist>
