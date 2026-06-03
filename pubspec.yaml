@@ -48,6 +48,7 @@ dependencies:
   archive: ^4.0.7
   file_picker: ^8.1.2
   flutter_plugin_android_lifecycle: 2.0.24
+  flutter_inappwebview: ^6.1.5
 
 
 dev_dependencies:
@@ -93,6 +94,8 @@ flutter:
 
   assets:
     - assets/styles/
+    - assets/web_map/
+    - assets/web_map/vendor/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -23,6 +23,7 @@ import '../services/offline_search_index.dart';
 import '../services/routing_service.dart';
 import '../services/subscription_service.dart';
 import '../services/tile_config.dart';
+import '../services/web_map_controller.dart';
 import '../util/coordinate_formatter.dart';
 import '../util/geo_math.dart';
 import '../util/polygon_geo.dart';
@@ -32,6 +33,7 @@ import '../widgets/compass_fab.dart';
 import '../widgets/coord_card.dart';
 import '../theme/tactical_theme.dart';
 import '../widgets/search_card.dart';
+import '../widgets/web_map_view.dart';
 import 'plans_screen.dart';
 import 'search_screen.dart';
 
@@ -58,6 +60,15 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   MapLibreMapController? _controller;
+
+  // Desktop (Windows/macOS/Linux) renders the basemap with MapLibre GL JS in a
+  // webview instead of the native SDK. When non-null we drive the map through
+  // this bridge; all the overlay/camera helpers below dual-dispatch to it.
+  WebMapController? _webController;
+  bool get _isDesktopMap => isDesktopMapPlatform;
+  // MARK markers on the web map are keyed by a running id (no native handles).
+  int _webMarkSeq = 0;
+
   final LocationService _locationService = LocationService();
 
   LatLng _mapCenter = _kInitialCenter;
@@ -171,6 +182,9 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _rotationLocked = next);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kRotationLockPrefKey, next);
+    if (_webController != null) {
+      await _webController!.setInteraction(rotate: !next, pitch: !next);
+    }
     if (next) {
       await _onResetBearing();
     }
@@ -209,6 +223,25 @@ class _MapScreenState extends State<MapScreen> {
   static const String _kSatelliteLayerId = 'sat-esri-layer';
 
   Future<void> _applySatellite(bool on) async {
+    if (_webController != null) {
+      try {
+        if (on && !_satelliteLayerAdded) {
+          await _webController!.addRaster(
+            _kSatelliteSourceId,
+            tiles: <String>[kEsriWorldImageryTileUrl],
+            maxzoom: kEsriMaxZoom,
+            attribution: kEsriWorldImageryAttribution,
+          );
+          _satelliteLayerAdded = true;
+        } else if (!on && _satelliteLayerAdded) {
+          await _webController!.removeLayer(_kSatelliteSourceId);
+          _satelliteLayerAdded = false;
+        }
+      } catch (e) {
+        debugPrint('Satellite layer toggle failed (web): $e');
+      }
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
     try {
@@ -261,6 +294,9 @@ class _MapScreenState extends State<MapScreen> {
   Circle? _rulerCircleA;
   Circle? _rulerCircleB;
   bool _rulerLayerAdded = false;
+  // Desktop ruler: no native circle handles, so track "second point placed"
+  // explicitly to mirror the native (_rulerCircleA && _rulerCircleB) state.
+  bool _webRulerComplete = false;
 
   Line? _trackLine;
   LatLng? _trackFrom;
@@ -464,7 +500,15 @@ class _MapScreenState extends State<MapScreen> {
     );
     if (result == null || !mounted) return;
     final MapLibreMapController? c = _controller;
-    if (c != null) {
+    if (_webController != null) {
+      await _webController!.fitBounds(
+        west: result.bbox.southwest.longitude,
+        south: result.bbox.southwest.latitude,
+        east: result.bbox.northeast.longitude,
+        north: result.bbox.northeast.latitude,
+      );
+      await _updateSelectedPlaceMarker(result.center);
+    } else if (c != null) {
       try {
         await c.animateCamera(
           CameraUpdate.newLatLngBounds(
@@ -487,6 +531,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _updateSelectedPlaceMarker(LatLng at) async {
+    if (_webController != null) {
+      await _webController!.setMarker('place', at.latitude, at.longitude, kind: 'place');
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
     if (_selectedPlaceHalo == null || _selectedPlaceDot == null) {
@@ -512,6 +560,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _removeSelectedPlaceMarker() async {
+    if (_webController != null) {
+      await _webController!.removeMarker('place');
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c != null) {
       if (_selectedPlaceHalo != null) await c.removeCircle(_selectedPlaceHalo!);
@@ -585,6 +637,11 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _onClear() async {
+    if (_webController != null) {
+      await _webController!.clearOverlays();
+      _webRulerComplete = false;
+      _webMarkSeq = 0;
+    }
     final MapLibreMapController? c = _controller;
     if (c != null) {
       await c.clearCircles();
@@ -637,6 +694,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _onResetBearing() async {
+    if (_webController != null) {
+      await _webController!.flyTo(bearing: 0, pitch: 0);
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
     final CameraPosition? pos = c.cameraPosition;
@@ -658,9 +719,13 @@ class _MapScreenState extends State<MapScreen> {
       if (!mounted) return;
       final LatLng here = LatLng(pos.latitude, pos.longitude);
       setState(() => _currentGps = here);
-      await _controller?.animateCamera(
-        CameraUpdate.newLatLngZoom(here, 16),
-      );
+      if (_webController != null) {
+        await _webController!.flyTo(lat: here.latitude, lng: here.longitude, zoom: 16);
+      } else {
+        await _controller?.animateCamera(
+          CameraUpdate.newLatLngZoom(here, 16),
+        );
+      }
       await _updateGpsMarker(here);
     } on LocationDenied catch (e) {
       if (!mounted) return;
@@ -672,6 +737,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _updateGpsMarker(LatLng at) async {
+    if (_webController != null) {
+      await _webController!.setMarker('gps', at.latitude, at.longitude, kind: 'gps');
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
     if (_gpsHalo == null || _gpsDot == null) {
@@ -782,6 +851,13 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _addMark(LatLng at) async {
+    if (_webController != null) {
+      _webMarkSeq++;
+      await _webController!
+          .setMarker('mark-$_webMarkSeq', at.latitude, at.longitude, kind: 'pin');
+      _setStatusMessage('Markers: $_webMarkSeq');
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null || !_markPinReady) return;
     final Symbol s = await c.addSymbol(SymbolOptions(
@@ -876,6 +952,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _handleRulerTap(LatLng at) async {
+    if (_webController != null) {
+      await _handleRulerTapWeb(at);
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
 
@@ -942,6 +1022,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _resetRuler() async {
+    if (_webController != null) {
+      await _resetRulerWeb();
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
     if (_rulerCircleA != null) await c.removeCircle(_rulerCircleA!);
@@ -957,9 +1041,47 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _abandonRulerInProgress() async {
+    if (_webController != null) {
+      if (_rulerA != null && !_webRulerComplete) await _resetRulerWeb();
+      return;
+    }
     if (_rulerCircleA != null && _rulerCircleB == null) {
       await _resetRuler();
     }
+  }
+
+  // Desktop ruler interaction, mirroring [_handleRulerTap]: first tap drops
+  // endpoint A, second draws the line + distance, a third resets and starts
+  // over at the tapped point.
+  Future<void> _handleRulerTapWeb(LatLng at) async {
+    final WebMapController w = _webController!;
+    if (_webRulerComplete) {
+      await _resetRulerWeb();
+    }
+    if (_rulerA == null) {
+      _rulerA = at;
+      await w.setMarker('ruler-a', at.latitude, at.longitude, kind: 'ruler');
+      return;
+    }
+    final LatLng a = _rulerA!;
+    await w.setMarker('ruler-b', at.latitude, at.longitude, kind: 'ruler');
+    await w.setGeoJson('ruler', _lineFeature(<LatLng>[a, at]), style: 'ruler');
+    _webRulerComplete = true;
+    final double meters = GeoMath.haversineMeters(
+        a.latitude, a.longitude, at.latitude, at.longitude);
+    if (!mounted) return;
+    _setStatusMessage('Distance: ${GeoMath.formatDistance(meters)}');
+  }
+
+  Future<void> _resetRulerWeb() async {
+    final WebMapController? w = _webController;
+    if (w != null) {
+      await w.removeMarker('ruler-a');
+      await w.removeMarker('ruler-b');
+      await w.removeGeoJson('ruler');
+    }
+    _rulerA = null;
+    _webRulerComplete = false;
   }
 
   Future<void> _startTrackMode() async {
@@ -967,9 +1089,16 @@ class _MapScreenState extends State<MapScreen> {
       final Position pos = await _locationService.currentPosition();
       if (!mounted) return;
       final LatLng here = LatLng(pos.latitude, pos.longitude);
+      _trackFrom = here;
+      if (_webController != null) {
+        await _webController!
+            .setMarker('track-a', here.latitude, here.longitude, kind: 'track-a');
+        if (!mounted) return;
+        _setStatusMessage('Tap destination on the map');
+        return;
+      }
       final MapLibreMapController? c = _controller;
       if (c == null) return;
-      _trackFrom = here;
       _trackFromCircle = await c.addCircle(CircleOptions(
         geometry: here,
         circleRadius: 7,
@@ -992,10 +1121,14 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _setTrackDestination(LatLng dest) async {
     final MapLibreMapController? c = _controller;
-    if (c == null || _trackFrom == null) return;
+    if (_trackFrom == null) return;
+    if (c == null && _webController == null) return;
 
-    if (_trackToCircle == null) {
-      _trackToCircle = await c.addCircle(CircleOptions(
+    if (_webController != null) {
+      await _webController!
+          .setMarker('track-b', dest.latitude, dest.longitude, kind: 'track-b');
+    } else if (_trackToCircle == null) {
+      _trackToCircle = await c!.addCircle(CircleOptions(
         geometry: dest,
         circleRadius: 7,
         circleColor: '#00C853',
@@ -1003,7 +1136,7 @@ class _MapScreenState extends State<MapScreen> {
         circleStrokeWidth: 2,
       ));
     } else {
-      await c.updateCircle(_trackToCircle!, CircleOptions(geometry: dest));
+      await c!.updateCircle(_trackToCircle!, CircleOptions(geometry: dest));
     }
 
     _showTopToast('Routing…');
@@ -1036,15 +1169,18 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
-    if (_trackLine == null) {
-      _trackLine = await c.addLine(LineOptions(
+    if (_webController != null) {
+      await _webController!
+          .setGeoJson('track', _lineFeature(route.geometry), style: 'track');
+    } else if (_trackLine == null) {
+      _trackLine = await c!.addLine(LineOptions(
         geometry: route.geometry,
         lineColor: '#00C853',
         lineWidth: 4.0,
         lineOpacity: 0.9,
       ));
     } else {
-      await c.updateLine(_trackLine!, LineOptions(geometry: route.geometry));
+      await c!.updateLine(_trackLine!, LineOptions(geometry: route.geometry));
     }
     if (!mounted) return;
     final String prefix = offline ? 'Offline path' : 'Path';
@@ -1065,6 +1201,13 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _clearTrackOverlay() async {
+    if (_webController != null) {
+      await _webController!.removeMarker('track-a');
+      await _webController!.removeMarker('track-b');
+      await _webController!.removeGeoJson('track');
+      _trackFrom = null;
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c != null) {
       if (_trackLine != null) await c.removeLine(_trackLine!);
@@ -1080,6 +1223,16 @@ class _MapScreenState extends State<MapScreen> {
   // ---------------- AREA (custom download polygon) ----------------
 
   Future<void> _addAreaPoint(LatLng at) async {
+    if (_webController != null) {
+      if (_areaDownloading) return;
+      _areaPoints.add(at);
+      await _webController!.setMarker(
+          'area-${_areaPoints.length - 1}', at.latitude, at.longitude,
+          kind: 'area');
+      await _redrawAreaPolygon();
+      if (mounted) setState(() {});
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c == null || _areaDownloading) return;
     _areaPoints.add(at);
@@ -1097,6 +1250,14 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _undoAreaPoint() async {
     if (_areaPoints.isEmpty || _areaDownloading) return;
+    if (_webController != null) {
+      final int idx = _areaPoints.length - 1;
+      _areaPoints.removeLast();
+      await _webController!.removeMarker('area-$idx');
+      await _redrawAreaPolygon();
+      if (mounted) setState(() {});
+      return;
+    }
     final MapLibreMapController? c = _controller;
     _areaPoints.removeLast();
     if (_areaVertexCircles.isNotEmpty) {
@@ -1109,7 +1270,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _redrawAreaPolygon() async {
     final MapLibreMapController? c = _controller;
-    if (c == null) return;
+    if (c == null && _webController == null) return;
     final Map<String, dynamic> data;
     if (_areaPoints.length >= 3) {
       final List<List<double>> ring = _areaPoints
@@ -1131,6 +1292,12 @@ class _MapScreenState extends State<MapScreen> {
         'features': <dynamic>[],
       };
     }
+
+    if (_webController != null) {
+      await _webController!.setGeoJson('area', data, style: 'area');
+      return;
+    }
+    if (c == null) return;
 
     if (!_areaLayerAdded) {
       await c.addGeoJsonSource(_kAreaSourceId, data);
@@ -1156,6 +1323,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _clearAreaOverlay() async {
+    if (_webController != null) {
+      for (int i = 0; i < _areaPoints.length; i++) {
+        await _webController!.removeMarker('area-$i');
+      }
+      await _webController!.removeGeoJson('area');
+      _areaPoints.clear();
+      if (mounted) setState(() {});
+      return;
+    }
     final MapLibreMapController? c = _controller;
     if (c != null) {
       for (final Circle circle in _areaVertexCircles) {
@@ -1243,6 +1419,79 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  /// Renders the basemap: the native MapLibre SDK on mobile/web, or MapLibre
+  /// GL JS in a webview on desktop (Windows/macOS/Linux), where the native SDK
+  /// has no binding. Both consume the same style string (online URL or the
+  /// offline localhost-tile JSON).
+  Widget _buildBasemap(TileConfig cfg) {
+    final String style = _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl;
+    if (_isDesktopMap) {
+      return WebMapView(
+        styleJson: style,
+        onControllerReady: _onWebMapReady,
+        onCameraChanged: _onWebCameraChanged,
+        onMapClick: (double lat, double lng, double x, double y) {
+          _onMapClick(Point<double>(x, y), LatLng(lat, lng));
+        },
+      );
+    }
+    return MapLibreMap(
+      styleString: style,
+      initialCameraPosition: const CameraPosition(
+        target: _kInitialCenter,
+        zoom: _kInitialZoom,
+      ),
+      minMaxZoomPreference: MinMaxZoomPreference(0, cfg.interactiveMaxZoom),
+      onMapCreated: _onMapCreated,
+      onStyleLoadedCallback: _onStyleLoaded,
+      onMapClick: _onMapClick,
+      trackCameraPosition: true,
+      compassEnabled: false,
+      // We draw our own GPS halo + dot via _updateGpsMarker so we can keep it
+      // in sync with _currentGps and survive CLR. Letting MapLibre also render
+      // its native location indicator just gave us two stacked blue dots.
+      myLocationEnabled: false,
+      myLocationRenderMode: MyLocationRenderMode.normal,
+      myLocationTrackingMode: MyLocationTrackingMode.none,
+      rotateGesturesEnabled: !_rotationLocked,
+      tiltGesturesEnabled: !_rotationLocked,
+    );
+  }
+
+  /// Desktop: the webview map finished its first style load and handed us a
+  /// controller. Apply persisted view state the native callbacks would have.
+  void _onWebMapReady(WebMapController c) {
+    _webController = c;
+    // No native pin image to register on desktop — allow MARK immediately.
+    _markPinReady = true;
+    if (_rotationLocked) {
+      unawaited(c.setInteraction(rotate: false, pitch: false));
+    }
+    if (_satelliteBasemap && subscriptionService.tier == AppTier.pro) {
+      unawaited(_applySatellite(true));
+    }
+    if (_currentGps != null) {
+      unawaited(_updateGpsMarker(_currentGps!));
+    }
+    // Native kicks this from _registerMarkPin, which never runs on desktop.
+    unawaited(_startGpsTracking());
+  }
+
+  /// Desktop camera updates from the webview, mirroring [_onControllerChanged].
+  void _onWebCameraChanged(
+      double lat, double lng, double zoom, double bearing) {
+    if (!mounted) return;
+    setState(() {
+      _mapCenter = LatLng(lat, lng);
+      _bearing = bearing;
+    });
+    final int level = zoom.round();
+    if (_lastToastedZoomLevel != level) {
+      _lastToastedZoomLevel = level;
+      _showTopToast('Zoom: $level');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
@@ -1255,28 +1504,7 @@ class _MapScreenState extends State<MapScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          MapLibreMap(
-            styleString: _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl,
-            initialCameraPosition: const CameraPosition(
-              target: _kInitialCenter,
-              zoom: _kInitialZoom,
-            ),
-            minMaxZoomPreference: MinMaxZoomPreference(0, cfg.interactiveMaxZoom),
-            onMapCreated: _onMapCreated,
-            onStyleLoadedCallback: _onStyleLoaded,
-            onMapClick: _onMapClick,
-            trackCameraPosition: true,
-            compassEnabled: false,
-            // We draw our own GPS halo + dot via _updateGpsMarker so we can
-            // keep it in sync with _currentGps and survive CLR. Letting
-            // MapLibre also render its native location indicator just gave
-            // us two stacked blue dots.
-            myLocationEnabled: false,
-            myLocationRenderMode: MyLocationRenderMode.normal,
-            myLocationTrackingMode: MyLocationTrackingMode.none,
-            rotateGesturesEnabled: !_rotationLocked,
-            tiltGesturesEnabled: !_rotationLocked,
-          ),
+          _buildBasemap(cfg),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),

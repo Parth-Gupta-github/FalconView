@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<!--
+  FalconView desktop map host.
+
+  Renders a MapLibre GL JS map inside a Flutter `InAppWebView` on platforms
+  where the native MapLibre SDK has no binding (Windows / macOS / Linux). The
+  Flutter side (`WebMapController`) drives this page by evaluating
+  `FV.handle('<command-json>')`; this page reports user/camera events back via
+  `window.flutter_inappwebview.callHandler('fvEvent', <payload>)`.
+
+  MapLibre GL JS renders vector tiles on the GPU via WebGL, so pan/zoom is as
+  smooth as the native mobile SDK — no PNG rasterisation. The library is
+  vendored under ./vendor so the desktop map works fully offline.
+-->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <link href="./vendor/maplibre-gl.css" rel="stylesheet" />
+  <script src="./vendor/maplibre-gl.js"></script>
+  <style>
+    html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; }
+    #map { position: absolute; top: 0; bottom: 0; left: 0; right: 0; background: #eceff1; }
+
+    /* DOM markers. MapLibre positions the element's centre at the lng/lat. */
+    .fv-marker { will-change: transform; }
+    .fv-dot {
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 2px solid #fff; box-shadow: 0 0 0 6px rgba(37,99,235,0.18);
+    }
+    .fv-dot.gps      { background: #2563EB; box-shadow: 0 0 0 8px rgba(37,99,235,0.18); }
+    .fv-dot.place    { background: #E53935; box-shadow: 0 0 0 9px rgba(255,112,67,0.22); }
+    .fv-dot.track-a  { background: #2563EB; }
+    .fv-dot.track-b  { background: #00C853; }
+    .fv-dot.ruler    { width: 12px; height: 12px; background: #FF1744; box-shadow: none; }
+    .fv-dot.area     { width: 10px; height: 10px; background: #1565C0; box-shadow: none; }
+    /* A teardrop pin for MARK. */
+    .fv-pin {
+      width: 22px; height: 22px; background: #E53935;
+      border: 2px solid #fff; border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg); box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+  (function () {
+    "use strict";
+
+    // --- event channel: JS -> Dart -------------------------------------------
+    function emit(type, data) {
+      var payload = Object.assign({ type: type }, data || {});
+      if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+        window.flutter_inappwebview.callHandler('fvEvent', payload);
+      }
+    }
+
+    var map = null;
+    var markers = {};   // id -> maplibre.Marker
+    var rasterIds = {}; // id -> {source, layer}
+
+    // --- bootstrap -----------------------------------------------------------
+    // A minimal placeholder style so the canvas exists before Dart pushes the
+    // real style; replaced on the first setStyle command.
+    function boot() {
+      map = new maplibregl.Map({
+        container: 'map',
+        style: { version: 8, sources: {}, layers: [
+          { id: 'bg', type: 'background', paint: { 'background-color': '#eceff1' } }
+        ] },
+        center: [75.8577, 22.7196],
+        zoom: 11,
+        attributionControl: { compact: true }
+      });
+
+      map.on('load', function () { emit('ready'); });
+      map.on('moveend', reportCamera);
+      map.on('move', reportCameraThrottled);
+      map.on('click', function (e) {
+        emit('click', {
+          lng: e.lngLat.lng, lat: e.lngLat.lat,
+          x: e.point.x, y: e.point.y
+        });
+      });
+    }
+
+    function reportCamera() {
+      if (!map) return;
+      var c = map.getCenter();
+      emit('camera', {
+        lng: c.lng, lat: c.lat,
+        zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch()
+      });
+    }
+    // Throttle the high-frequency `move` so we don't flood the bridge.
+    var lastMove = 0;
+    function reportCameraThrottled() {
+      var now = Date.now();
+      if (now - lastMove < 90) return;
+      lastMove = now;
+      reportCamera();
+    }
+
+    // --- command channel: Dart -> JS -----------------------------------------
+    // Dart calls FV.handle(JSON.stringify({cmd:'...', ...})).
+    window.FV = {
+      handle: function (json) {
+        var msg;
+        try { msg = JSON.parse(json); } catch (e) { return; }
+        if (!map) return;
+        try { dispatch(msg); }
+        catch (e) { emit('error', { message: String(e), cmd: msg && msg.cmd }); }
+      }
+    };
+
+    function dispatch(msg) {
+      switch (msg.cmd) {
+        case 'setStyle':       return setStyle(msg.style, msg.diff);
+        case 'flyTo':          return flyTo(msg);
+        case 'fitBounds':      return fitBounds(msg);
+        case 'setMarker':      return setMarker(msg);
+        case 'removeMarker':   return removeMarker(msg.id);
+        case 'setGeoJson':     return setGeoJson(msg);
+        case 'removeGeoJson':  return removeGeoJson(msg.id);
+        case 'addRaster':      return addRaster(msg);
+        case 'removeLayer':    return removeRaster(msg.id);
+        case 'clearOverlays':  return clearOverlays();
+        case 'setInteraction': return setInteraction(msg);
+      }
+    }
+
+    function setStyle(style, diff) {
+      var s = style;
+      if (typeof style === 'string') {
+        var t = style.trim();
+        // A JSON style document vs. a style URL (https://.../style.json).
+        s = (t.charAt(0) === '{') ? JSON.parse(t) : style;
+      }
+      // diff:false forces a full reload (needed when sources change wholesale).
+      map.setStyle(s, { diff: diff !== false });
+    }
+
+    function flyTo(m) {
+      var opts = { duration: m.duration != null ? m.duration : 600 };
+      if (m.lng != null && m.lat != null) opts.center = [m.lng, m.lat];
+      if (m.zoom != null) opts.zoom = m.zoom;
+      if (m.bearing != null) opts.bearing = m.bearing;
+      if (m.pitch != null) opts.pitch = m.pitch;
+      map.flyTo(opts);
+    }
+
+    function fitBounds(m) {
+      map.fitBounds(
+        [[m.west, m.south], [m.east, m.north]],
+        { padding: m.padding != null ? m.padding : 60, duration: m.duration != null ? m.duration : 600 }
+      );
+    }
+
+    // Markers are HTML elements so we can style GPS halos, pins, etc. with CSS.
+    function setMarker(m) {
+      var existing = markers[m.id];
+      var lngLat = [m.lng, m.lat];
+      if (existing) { existing.setLngLat(lngLat); return; }
+      var el = document.createElement('div');
+      el.className = 'fv-marker';
+      var inner = document.createElement('div');
+      if (m.kind === 'pin') {
+        inner.className = 'fv-pin';
+      } else {
+        inner.className = 'fv-dot ' + (m.kind || 'gps');
+      }
+      el.appendChild(inner);
+      var anchor = (m.kind === 'pin') ? 'bottom' : 'center';
+      var marker = new maplibregl.Marker({ element: el, anchor: anchor })
+        .setLngLat(lngLat).addTo(map);
+      markers[m.id] = marker;
+    }
+
+    function removeMarker(id) {
+      var mk = markers[id];
+      if (mk) { mk.remove(); delete markers[id]; }
+    }
+
+    // Lines & polygons as GeoJSON source + styled layer(s). `m.style` selects
+    // the look: 'ruler' (dashed red), 'track' (solid green), 'area' (blue fill).
+    function setGeoJson(m) {
+      var srcId = 'fv-src-' + m.id;
+      var data = (typeof m.data === 'string') ? JSON.parse(m.data) : m.data;
+      var src = map.getSource(srcId);
+      if (src) { src.setData(data); return; }
+      map.addSource(srcId, { type: 'geojson', data: data });
+      addOverlayLayers(m.id, srcId, m.style || 'track');
+    }
+
+    function addOverlayLayers(id, srcId, style) {
+      if (style === 'area') {
+        map.addLayer({ id: 'fv-fill-' + id, type: 'fill', source: srcId,
+          paint: { 'fill-color': '#1565C0', 'fill-opacity': 0.14 } });
+        map.addLayer({ id: 'fv-line-' + id, type: 'line', source: srcId,
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#1565C0', 'line-width': 2.5 } });
+      } else if (style === 'ruler') {
+        map.addLayer({ id: 'fv-line-' + id, type: 'line', source: srcId,
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#FF1744', 'line-width': 3, 'line-dasharray': [2, 2] } });
+      } else { // track
+        map.addLayer({ id: 'fv-line-' + id, type: 'line', source: srcId,
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#00C853', 'line-width': 4, 'line-opacity': 0.9 } });
+      }
+    }
+
+    function removeGeoJson(id) {
+      ['fv-fill-' + id, 'fv-line-' + id].forEach(function (lid) {
+        if (map.getLayer(lid)) map.removeLayer(lid);
+      });
+      var srcId = 'fv-src-' + id;
+      if (map.getSource(srcId)) map.removeSource(srcId);
+    }
+
+    // Satellite (Esri) raster overlay, inserted beneath our overlay layers.
+    function addRaster(m) {
+      var srcId = 'fv-rsrc-' + m.id, layerId = 'fv-rlayer-' + m.id;
+      if (map.getSource(srcId)) return;
+      map.addSource(srcId, {
+        type: 'raster', tiles: m.tiles, tileSize: m.tileSize || 256,
+        minzoom: 0, maxzoom: m.maxzoom || 19,
+        attribution: m.attribution || ''
+      });
+      // Insert above basemap fills/lines but below any DOM markers (markers are
+      // not style layers, so they always stay on top regardless).
+      map.addLayer({ id: layerId, type: 'raster', source: srcId }, firstOverlayLayer());
+      rasterIds[m.id] = { source: srcId, layer: layerId };
+    }
+
+    function removeRaster(id) {
+      var r = rasterIds[id];
+      if (!r) return;
+      if (map.getLayer(r.layer)) map.removeLayer(r.layer);
+      if (map.getSource(r.source)) map.removeSource(r.source);
+      delete rasterIds[id];
+    }
+
+    function firstOverlayLayer() {
+      var layers = map.getStyle().layers || [];
+      for (var i = 0; i < layers.length; i++) {
+        if (layers[i].id.indexOf('fv-') === 0) return layers[i].id;
+      }
+      return undefined;
+    }
+
+    function clearOverlays() {
+      Object.keys(markers).forEach(removeMarker);
+      var layers = (map.getStyle().layers || []).map(function (l) { return l.id; });
+      layers.forEach(function (lid) {
+        if (lid.indexOf('fv-fill-') === 0 || lid.indexOf('fv-line-') === 0) map.removeLayer(lid);
+      });
+      Object.keys(map.getStyle().sources || {}).forEach(function (sid) {
+        if (sid.indexOf('fv-src-') === 0) map.removeSource(sid);
+      });
+    }
+
+    function setInteraction(m) {
+      if (m.rotate === false) { map.dragRotate.disable(); map.touchZoomRotate.disableRotation(); }
+      else { map.dragRotate.enable(); map.touchZoomRotate.enableRotation(); }
+      if (m.pitch === false) { map.setPitch(0); }
+    }
+
+    boot();
+  })();
+  </script>
+</body>
+</html>
