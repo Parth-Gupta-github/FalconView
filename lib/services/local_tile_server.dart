@@ -36,7 +36,20 @@ class LocalTileServer {
       'https://tiles.openfreemap.org/planet';
   static const String _upstreamUserAgent =
       'FalconView/1.0 (local tile proxy; contact: tarun@igismap.com)';
+  // TileJSON resolve uses the high-zoom timeout (small JSON).
   static const Duration _upstreamTimeout = Duration(seconds: 10);
+
+  /// Low-zoom tiles cover huge regions and are correspondingly big — a z0
+  /// planet tile is often 2–5 MB while a z14 city block is 30–150 KB. On a
+  /// slow link the same 10 s deadline that's fine for z12+ aborts every
+  /// z0–6 fetch, leaving the basemap blank when the user zooms out. Give
+  /// the low zooms a generous window so they actually complete.
+  static Duration _tileTimeoutForZoom(int z) {
+    if (z <= 3) return const Duration(seconds: 45);
+    if (z <= 6) return const Duration(seconds: 25);
+    if (z <= 9) return const Duration(seconds: 15);
+    return const Duration(seconds: 10);
+  }
 
   // LRU cap for proxied upstream tiles. ~500 tiles × ~50 KB avg ≈ 25 MB —
   // enough to cover a few full pan/zoom cycles around any city without
@@ -270,7 +283,7 @@ class LocalTileServer {
           .get(Uri.parse(url), headers: <String, String>{
             'User-Agent': _upstreamUserAgent,
           })
-          .timeout(_upstreamTimeout);
+          .timeout(_tileTimeoutForZoom(z));
       if (r.statusCode == 200) {
         return _UpstreamFetch.ok(r.bodyBytes);
       }
