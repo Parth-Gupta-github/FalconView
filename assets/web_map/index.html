@@ -62,6 +62,58 @@
       }
     }
 
+    // --- global error capture ------------------------------------------------
+    // Without these, MapLibre internals can call `console.error(new Error())`
+    // and Dart only sees the stringified "Error" with no message, source or
+    // stack. Capture everything we can and emit a structured payload so the
+    // Dart side can log a useful diagnostic.
+    function describe(err) {
+      if (err == null) return { message: 'null' };
+      if (err instanceof Error) {
+        return { message: err.message || err.name || 'Error',
+                 name: err.name || 'Error',
+                 stack: err.stack || '' };
+      }
+      if (typeof err === 'string') return { message: err };
+      try { return { message: JSON.stringify(err) }; }
+      catch (_) { return { message: String(err) }; }
+    }
+    window.addEventListener('error', function (e) {
+      var d = describe(e.error || e.message);
+      emit('error', { message: d.message, stack: d.stack || '',
+                      source: e.filename || '', line: e.lineno || 0,
+                      col: e.colno || 0, cmd: 'window.onerror' });
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      var d = describe(e.reason);
+      emit('error', { message: d.message, stack: d.stack || '',
+                      cmd: 'unhandledrejection' });
+    });
+    // Wrap console.error so MapLibre's internal error logs come through with
+    // full args, not just an empty `"Error"` string.
+    (function () {
+      var orig = console.error.bind(console);
+      console.error = function () {
+        try {
+          var parts = [];
+          for (var i = 0; i < arguments.length; i++) {
+            var a = arguments[i];
+            if (a instanceof Error) {
+              parts.push((a.message || a.name || 'Error') +
+                         (a.stack ? '\n' + a.stack : ''));
+            } else if (typeof a === 'string') {
+              parts.push(a);
+            } else {
+              try { parts.push(JSON.stringify(a)); }
+              catch (_) { parts.push(String(a)); }
+            }
+          }
+          emit('error', { message: parts.join(' | '), cmd: 'console.error' });
+        } catch (_) {}
+        return orig.apply(console, arguments);
+      };
+    })();
+
     var map = null;
     var markers = {};   // id -> maplibre.Marker
     var rasterIds = {}; // id -> {source, layer}

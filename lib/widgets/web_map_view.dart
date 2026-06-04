@@ -109,7 +109,22 @@ class _WebMapViewState extends State<WebMapView> {
                 (Object? k, Object? v) => MapEntry<String, dynamic>('$k', v),
               );
               if (e['type'] == 'error') {
-                debugPrint('WebMapView JS error: ${e['message']} (${e['cmd']})');
+                final String msg = '${e['message']}';
+                final String cmd = '${e['cmd']}';
+                final String source = '${e['source'] ?? ''}';
+                final int? line = (e['line'] as num?)?.toInt();
+                final String stack = '${e['stack'] ?? ''}';
+                final StringBuffer buf = StringBuffer('WebMapView JS error');
+                if (cmd.isNotEmpty && cmd != 'null') buf.write(' [$cmd]');
+                buf.write(': $msg');
+                if (source.isNotEmpty) {
+                  buf.write(' @ $source');
+                  if (line != null && line > 0) buf.write(':$line');
+                }
+                if (stack.isNotEmpty && stack != 'null') {
+                  buf.write('\n$stack');
+                }
+                debugPrint(buf.toString());
                 return;
               }
               _controller?.handleEvent(e);
