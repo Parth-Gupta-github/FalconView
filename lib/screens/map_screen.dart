@@ -130,11 +130,11 @@ class _MapScreenState extends State<MapScreen> {
     Connectivity().checkConnectivity().then((List<ConnectivityResult> r) {
       if (mounted && isUp(r) != _isOnline) setState(() => _isOnline = isUp(r));
     });
-    _connSub = Connectivity().onConnectivityChanged.listen(
-      (List<ConnectivityResult> r) {
-        if (mounted && isUp(r) != _isOnline) setState(() => _isOnline = isUp(r));
-      },
-    );
+    _connSub = Connectivity().onConnectivityChanged.listen((
+      List<ConnectivityResult> r,
+    ) {
+      if (mounted && isUp(r) != _isOnline) setState(() => _isOnline = isUp(r));
+    });
   }
 
   /// Starts the local tile server and, if any MBTiles regions are imported,
@@ -155,8 +155,9 @@ class _MapScreenState extends State<MapScreen> {
         String? full = _renderStyleJson;
         if (full == null) {
           try {
-            full = await TileConfig.forTier(subscriptionService.tier)
-                .loadRenderStyle();
+            full = await TileConfig.forTier(
+              subscriptionService.tier,
+            ).loadRenderStyle();
           } catch (_) {
             full = null;
           }
@@ -178,8 +179,9 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _loadRenderStyle() async {
     try {
-      final String s =
-          await TileConfig.forTier(subscriptionService.tier).loadRenderStyle();
+      final String s = await TileConfig.forTier(
+        subscriptionService.tier,
+      ).loadRenderStyle();
       if (!mounted) return;
       setState(() => _renderStyleJson = s);
     } catch (e) {
@@ -250,9 +252,9 @@ class _MapScreenState extends State<MapScreen> {
         'Satellite view is a Pro feature. Enable Pro in Plans.',
         error: true,
       );
-      await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const PlansScreen()),
-      );
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const PlansScreen()));
       return;
     }
     final bool next = !_satelliteBasemap;
@@ -289,13 +291,18 @@ class _MapScreenState extends State<MapScreen> {
     try {
       if (_selectedPlaceHalo != null) {
         await c.updateCircle(
-            _selectedPlaceHalo!, CircleOptions(circleColor: _placeHaloColor));
+          _selectedPlaceHalo!,
+          CircleOptions(circleColor: _placeHaloColor),
+        );
       }
       if (_selectedPlaceDot != null) {
         await c.updateCircle(
-            _selectedPlaceDot!,
-            CircleOptions(
-                circleColor: _placeDotColor, circleStrokeColor: _placeDotStroke));
+          _selectedPlaceDot!,
+          CircleOptions(
+            circleColor: _placeDotColor,
+            circleStrokeColor: _placeDotStroke,
+          ),
+        );
       }
       for (final Symbol s in _markSymbols) {
         await c.updateSymbol(s, SymbolOptions(iconImage: _markPinImage));
@@ -306,16 +313,28 @@ class _MapScreenState extends State<MapScreen> {
       // Ruler: line is a style layer; endpoints are circle annotations.
       if (_rulerLayerAdded) {
         await c.setLayerProperties(
-            _kRulerLayerId, LineLayerProperties(lineColor: _rulerColor));
+          _kRulerLayerId,
+          LineLayerProperties(lineColor: _rulerColor),
+        );
       }
       final String rulerStroke = _satelliteActive ? '#1976D2' : '#FFFFFF';
       if (_rulerCircleA != null) {
-        await c.updateCircle(_rulerCircleA!,
-            CircleOptions(circleColor: _rulerColor, circleStrokeColor: rulerStroke));
+        await c.updateCircle(
+          _rulerCircleA!,
+          CircleOptions(
+            circleColor: _rulerColor,
+            circleStrokeColor: rulerStroke,
+          ),
+        );
       }
       if (_rulerCircleB != null) {
-        await c.updateCircle(_rulerCircleB!,
-            CircleOptions(circleColor: _rulerColor, circleStrokeColor: rulerStroke));
+        await c.updateCircle(
+          _rulerCircleB!,
+          CircleOptions(
+            circleColor: _rulerColor,
+            circleStrokeColor: rulerStroke,
+          ),
+        );
       }
     } catch (e) {
       debugPrint('overlay restyle failed: $e');
@@ -462,19 +481,18 @@ class _MapScreenState extends State<MapScreen> {
     controller.addListener(_onControllerChanged);
     controller.onSymbolTapped.add(_onSymbolTapped);
   }
-  
+
   bool _symbolTapConsumed = false;
 
   Future<void> _onSymbolTapped(Symbol s) async {
     _symbolTapConsumed = true;
-    
+
     final LatLng? at = s.options.geometry;
     final MapLibreMapController? c = _controller;
     if (at == null || c == null) return;
     final CameraPosition? pos = c.cameraPosition;
     // Stay zoomed-in if already close; otherwise jump to a useful level.
-    final double targetZoom =
-        math.max(pos?.zoom ?? 16, 16.0).toDouble();
+    final double targetZoom = math.max(pos?.zoom ?? 16, 16.0).toDouble();
     await c.animateCamera(
       CameraUpdate.newLatLngZoom(at, targetZoom),
       duration: const Duration(milliseconds: 400),
@@ -632,9 +650,9 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _openSearch() async {
-    final Place? result = await Navigator.of(context).push<Place>(
-      MaterialPageRoute(builder: (_) => const SearchScreen()),
-    );
+    final Place? result = await Navigator.of(
+      context,
+    ).push<Place>(MaterialPageRoute(builder: (_) => const SearchScreen()));
     if (!mounted) return;
     // The search screen can download/import regions; pick any up so they
     // render offline (re-pushes the offline style into the webview on desktop).
@@ -673,27 +691,36 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _updateSelectedPlaceMarker(LatLng at) async {
     if (_webController != null) {
-      await _webController!.setMarker('place', at.latitude, at.longitude, kind: 'place');
+      await _webController!.setMarker(
+        'place',
+        at.latitude,
+        at.longitude,
+        kind: 'place',
+      );
       return;
     }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
     if (_selectedPlaceHalo == null || _selectedPlaceDot == null) {
-      _selectedPlaceHalo = await c.addCircle(CircleOptions(
-        geometry: at,
-        circleRadius: 18,
-        circleColor: _placeHaloColor,
-        circleOpacity: 0.22,
-        circleStrokeWidth: 0,
-      ));
-      _selectedPlaceDot = await c.addCircle(CircleOptions(
-        geometry: at,
-        circleRadius: 7,
-        circleColor: _placeDotColor,
-        circleStrokeColor: _placeDotStroke,
-        circleStrokeWidth: 2,
-        circleOpacity: 1.0,
-      ));
+      _selectedPlaceHalo = await c.addCircle(
+        CircleOptions(
+          geometry: at,
+          circleRadius: 18,
+          circleColor: _placeHaloColor,
+          circleOpacity: 0.22,
+          circleStrokeWidth: 0,
+        ),
+      );
+      _selectedPlaceDot = await c.addCircle(
+        CircleOptions(
+          geometry: at,
+          circleRadius: 7,
+          circleColor: _placeDotColor,
+          circleStrokeColor: _placeDotStroke,
+          circleStrokeWidth: 2,
+          circleOpacity: 1.0,
+        ),
+      );
     } else {
       await c.updateCircle(_selectedPlaceHalo!, CircleOptions(geometry: at));
       await c.updateCircle(_selectedPlaceDot!, CircleOptions(geometry: at));
@@ -762,10 +789,13 @@ class _MapScreenState extends State<MapScreen> {
   /// effect is immediate and self-explanatory.
   Future<void> _maybeShowFirstTimeHint(MapMode mode) async {
     const Map<MapMode, String> hints = <MapMode, String>{
-      MapMode.mark: 'Tap anywhere on the map to drop a pin. Tap a pin to fly to it.',
+      MapMode.mark:
+          'Tap anywhere on the map to drop a pin. Tap a pin to fly to it.',
       MapMode.ruler: 'Tap two points to measure the straight-line distance.',
-      MapMode.track: 'Tap a destination on the map to draw the route from your location.',
-      MapMode.area: 'Tap on the map to add polygon vertices. Tap near the first vertex to close.',
+      MapMode.track:
+          'Tap a destination on the map to draw the route from your location.',
+      MapMode.area:
+          'Tap on the map to add polygon vertices. Tap near the first vertex to close.',
     };
     final String? hint = hints[mode];
     if (hint == null) return;
@@ -844,12 +874,9 @@ class _MapScreenState extends State<MapScreen> {
     final CameraPosition? pos = c.cameraPosition;
     if (pos == null) return;
     await c.animateCamera(
-      CameraUpdate.newCameraPosition(CameraPosition(
-        target: pos.target,
-        zoom: pos.zoom,
-        bearing: 0,
-        tilt: 0,
-      )),
+      CameraUpdate.newCameraPosition(
+        CameraPosition(target: pos.target, zoom: pos.zoom, bearing: 0, tilt: 0),
+      ),
       duration: const Duration(milliseconds: 450),
     );
   }
@@ -861,11 +888,13 @@ class _MapScreenState extends State<MapScreen> {
       final LatLng here = LatLng(pos.latitude, pos.longitude);
       setState(() => _currentGps = here);
       if (_webController != null) {
-        await _webController!.flyTo(lat: here.latitude, lng: here.longitude, zoom: 16);
-      } else {
-        await _controller?.animateCamera(
-          CameraUpdate.newLatLngZoom(here, 16),
+        await _webController!.flyTo(
+          lat: here.latitude,
+          lng: here.longitude,
+          zoom: 16,
         );
+      } else {
+        await _controller?.animateCamera(CameraUpdate.newLatLngZoom(here, 16));
       }
       await _updateGpsMarker(here);
     } on LocationDenied catch (e) {
@@ -879,27 +908,36 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _updateGpsMarker(LatLng at) async {
     if (_webController != null) {
-      await _webController!.setMarker('gps', at.latitude, at.longitude, kind: 'gps');
+      await _webController!.setMarker(
+        'gps',
+        at.latitude,
+        at.longitude,
+        kind: 'gps',
+      );
       return;
     }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
     if (_gpsHalo == null || _gpsDot == null) {
-      _gpsHalo = await c.addCircle(CircleOptions(
-        geometry: at,
-        circleRadius: 16,
-        circleColor: '#2563EB',
-        circleOpacity: 0.18,
-        circleStrokeWidth: 0,
-      ));
-      _gpsDot = await c.addCircle(CircleOptions(
-        geometry: at,
-        circleRadius: 6,
-        circleColor: '#2563EB',
-        circleStrokeColor: '#FFFFFF',
-        circleStrokeWidth: 2,
-        circleOpacity: 1.0,
-      ));
+      _gpsHalo = await c.addCircle(
+        CircleOptions(
+          geometry: at,
+          circleRadius: 16,
+          circleColor: '#2563EB',
+          circleOpacity: 0.18,
+          circleStrokeWidth: 0,
+        ),
+      );
+      _gpsDot = await c.addCircle(
+        CircleOptions(
+          geometry: at,
+          circleRadius: 6,
+          circleColor: '#2563EB',
+          circleStrokeColor: '#FFFFFF',
+          circleStrokeWidth: 2,
+          circleOpacity: 1.0,
+        ),
+      );
     } else {
       await c.updateCircle(_gpsHalo!, CircleOptions(geometry: at));
       await c.updateCircle(_gpsDot!, CircleOptions(geometry: at));
@@ -960,9 +998,9 @@ class _MapScreenState extends State<MapScreen> {
           _addMark(poi.center);
         },
         onCopy: () async {
-          await Clipboard.setData(ClipboardData(
-            text: '${poi.name}\n${_formatCoords(poi.center)}',
-          ));
+          await Clipboard.setData(
+            ClipboardData(text: '${poi.name}\n${_formatCoords(poi.center)}'),
+          );
           if (!ctx.mounted) return;
           Navigator.pop(ctx);
           _showTopToast('Copied');
@@ -994,19 +1032,25 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _addMark(LatLng at) async {
     if (_webController != null) {
       _webMarkSeq++;
-      await _webController!
-          .setMarker('mark-$_webMarkSeq', at.latitude, at.longitude, kind: 'pin');
+      await _webController!.setMarker(
+        'mark-$_webMarkSeq',
+        at.latitude,
+        at.longitude,
+        kind: 'pin',
+      );
       _setStatusMessage('Markers: $_webMarkSeq');
       return;
     }
     final MapLibreMapController? c = _controller;
     if (c == null || !_markPinReady) return;
-    final Symbol s = await c.addSymbol(SymbolOptions(
-      geometry: at,
-      iconImage: _markPinImage,
-      iconAnchor: 'bottom',
-      iconSize: 0.55,
-    ));
+    final Symbol s = await c.addSymbol(
+      SymbolOptions(
+        geometry: at,
+        iconImage: _markPinImage,
+        iconAnchor: 'bottom',
+        iconSize: 0.55,
+      ),
+    );
     _markSymbols.add(s);
     _setStatusMessage('Markers: ${_markSymbols.length}');
   }
@@ -1053,8 +1097,9 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _startGpsTracking() async {
     if (_gpsSub != null) return;
     try {
-      final Stream<Position> stream =
-          await _locationService.positionStream(distanceFilterMeters: 10);
+      final Stream<Position> stream = await _locationService.positionStream(
+        distanceFilterMeters: 10,
+      );
       _gpsSub = stream.listen((Position pos) {
         if (!mounted) return;
         final LatLng here = LatLng(pos.latitude, pos.longitude);
@@ -1066,7 +1111,11 @@ class _MapScreenState extends State<MapScreen> {
     } catch (_) {}
   }
 
-  Future<Uint8List> _renderIconToPng(IconData icon, Color color, double size) async {
+  Future<Uint8List> _renderIconToPng(
+    IconData icon,
+    Color color,
+    double size,
+  ) async {
     final ui.PictureRecorder recorder = ui.PictureRecorder();
     final Canvas canvas = Canvas(recorder);
     final TextPainter tp = TextPainter(
@@ -1078,7 +1127,11 @@ class _MapScreenState extends State<MapScreen> {
           package: icon.fontPackage,
           color: color,
           shadows: const <Shadow>[
-            Shadow(color: Color(0x66000000), blurRadius: 2, offset: Offset(0, 1)),
+            Shadow(
+              color: Color(0x66000000),
+              blurRadius: 2,
+              offset: Offset(0, 1),
+            ),
           ],
         ),
       ),
@@ -1086,9 +1139,10 @@ class _MapScreenState extends State<MapScreen> {
     );
     tp.layout();
     tp.paint(canvas, Offset.zero);
-    final ui.Image img = await recorder
-        .endRecording()
-        .toImage(tp.width.ceil(), tp.height.ceil());
+    final ui.Image img = await recorder.endRecording().toImage(
+      tp.width.ceil(),
+      tp.height.ceil(),
+    );
     final ByteData? bd = await img.toByteData(format: ui.ImageByteFormat.png);
     return bd!.buffer.asUint8List();
   }
@@ -1115,29 +1169,33 @@ class _MapScreenState extends State<MapScreen> {
     _rulerCircleB = await c.addCircle(_rulerEndpointOptions(at));
     await _drawRulerLine(a, at);
 
-    final double meters =
-        GeoMath.haversineMeters(a.latitude, a.longitude, at.latitude, at.longitude);
+    final double meters = GeoMath.haversineMeters(
+      a.latitude,
+      a.longitude,
+      at.latitude,
+      at.longitude,
+    );
     if (!mounted) return;
     _setStatusMessage('Distance: ${GeoMath.formatDistance(meters)}');
   }
 
   CircleOptions _rulerEndpointOptions(LatLng at) => CircleOptions(
-        geometry: at,
-        circleRadius: 6,
-        circleColor: _rulerColor,
-        circleStrokeColor: _satelliteActive ? '#1976D2' : '#FFFFFF',
-        circleStrokeWidth: 2,
-      );
+    geometry: at,
+    circleRadius: 6,
+    circleColor: _rulerColor,
+    circleStrokeColor: _satelliteActive ? '#1976D2' : '#FFFFFF',
+    circleStrokeWidth: 2,
+  );
 
   Map<String, dynamic> _lineFeature(List<LatLng> points) => <String, dynamic>{
-        'type': 'Feature',
-        'geometry': <String, dynamic>{
-          'type': 'LineString',
-          'coordinates': points
-              .map((p) => <double>[p.longitude, p.latitude])
-              .toList(),
-        },
-      };
+    'type': 'Feature',
+    'geometry': <String, dynamic>{
+      'type': 'LineString',
+      'coordinates': points
+          .map((p) => <double>[p.longitude, p.latitude])
+          .toList(),
+    },
+  };
 
   Future<void> _drawRulerLine(LatLng a, LatLng b) async {
     final MapLibreMapController? c = _controller;
@@ -1210,7 +1268,11 @@ class _MapScreenState extends State<MapScreen> {
     await w.setGeoJson('ruler', _lineFeature(<LatLng>[a, at]), style: 'ruler');
     _webRulerComplete = true;
     final double meters = GeoMath.haversineMeters(
-        a.latitude, a.longitude, at.latitude, at.longitude);
+      a.latitude,
+      a.longitude,
+      at.latitude,
+      at.longitude,
+    );
     if (!mounted) return;
     _setStatusMessage('Distance: ${GeoMath.formatDistance(meters)}');
   }
@@ -1244,28 +1306,37 @@ class _MapScreenState extends State<MapScreen> {
     }
     if (!mounted) return;
     if (here == null) {
-      _showTopToast(errMsg ?? 'Could not determine your location.', error: true);
+      _showTopToast(
+        errMsg ?? 'Could not determine your location.',
+        error: true,
+      );
       setState(() => _mode = MapMode.none);
       return;
     }
 
     _trackFrom = here;
     if (_webController != null) {
-      await _webController!
-          .setMarker('track-a', here.latitude, here.longitude, kind: 'track-a');
+      await _webController!.setMarker(
+        'track-a',
+        here.latitude,
+        here.longitude,
+        kind: 'track-a',
+      );
       if (!mounted) return;
       _setStatusMessage('Tap destination on the map');
       return;
     }
     final MapLibreMapController? c = _controller;
     if (c == null) return;
-    _trackFromCircle = await c.addCircle(CircleOptions(
-      geometry: here,
-      circleRadius: 7,
-      circleColor: '#2563EB',
-      circleStrokeColor: '#FFFFFF',
-      circleStrokeWidth: 2,
-    ));
+    _trackFromCircle = await c.addCircle(
+      CircleOptions(
+        geometry: here,
+        circleRadius: 7,
+        circleColor: '#2563EB',
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: 2,
+      ),
+    );
     if (!mounted) return;
     _setStatusMessage('Tap destination on the map');
   }
@@ -1276,16 +1347,22 @@ class _MapScreenState extends State<MapScreen> {
     if (c == null && _webController == null) return;
 
     if (_webController != null) {
-      await _webController!
-          .setMarker('track-b', dest.latitude, dest.longitude, kind: 'track-b');
+      await _webController!.setMarker(
+        'track-b',
+        dest.latitude,
+        dest.longitude,
+        kind: 'track-b',
+      );
     } else if (_trackToCircle == null) {
-      _trackToCircle = await c!.addCircle(CircleOptions(
-        geometry: dest,
-        circleRadius: 7,
-        circleColor: '#00C853',
-        circleStrokeColor: '#FFFFFF',
-        circleStrokeWidth: 2,
-      ));
+      _trackToCircle = await c!.addCircle(
+        CircleOptions(
+          geometry: dest,
+          circleRadius: 7,
+          circleColor: '#00C853',
+          circleStrokeColor: '#FFFFFF',
+          circleStrokeWidth: 2,
+        ),
+      );
     } else {
       await c!.updateCircle(_trackToCircle!, CircleOptions(geometry: dest));
     }
@@ -1301,8 +1378,10 @@ class _MapScreenState extends State<MapScreen> {
       // Online routing failed — try the offline graph for any downloaded
       // region whose bbox contains the start point.
       try {
-        final OfflineRouteOutcome outcome =
-            await _offline.routeOffline(_trackFrom!, dest);
+        final OfflineRouteOutcome outcome = await _offline.routeOffline(
+          _trackFrom!,
+          dest,
+        );
         if (outcome.isSuccess) {
           route = outcome.route;
           offline = true;
@@ -1321,21 +1400,28 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     if (_webController != null) {
-      await _webController!
-          .setGeoJson('track', _lineFeature(route.geometry), style: 'track');
+      await _webController!.setGeoJson(
+        'track',
+        _lineFeature(route.geometry),
+        style: 'track',
+      );
     } else if (_trackLine == null) {
-      _trackLine = await c!.addLine(LineOptions(
-        geometry: route.geometry,
-        lineColor: _trackColor,
-        lineWidth: 4.0,
-        lineOpacity: 0.9,
-      ));
+      _trackLine = await c!.addLine(
+        LineOptions(
+          geometry: route.geometry,
+          lineColor: _trackColor,
+          lineWidth: 4.0,
+          lineOpacity: 0.9,
+        ),
+      );
     } else {
       await c!.updateLine(_trackLine!, LineOptions(geometry: route.geometry));
     }
     if (!mounted) return;
     final String prefix = offline ? 'Offline path' : 'Path';
-    _setStatusMessage('$prefix: ${GeoMath.formatDistance(route.distanceMeters)}');
+    _setStatusMessage(
+      '$prefix: ${GeoMath.formatDistance(route.distanceMeters)}',
+    );
   }
 
   String _offlineFailureMessage(OfflineRouteFailure? f) {
@@ -1378,8 +1464,11 @@ class _MapScreenState extends State<MapScreen> {
       if (_areaDownloading) return;
       _areaPoints.add(at);
       await _webController!.setMarker(
-          'area-${_areaPoints.length - 1}', at.latitude, at.longitude,
-          kind: 'area');
+        'area-${_areaPoints.length - 1}',
+        at.latitude,
+        at.longitude,
+        kind: 'area',
+      );
       await _redrawAreaPolygon();
       if (mounted) setState(() {});
       return;
@@ -1387,13 +1476,15 @@ class _MapScreenState extends State<MapScreen> {
     final MapLibreMapController? c = _controller;
     if (c == null || _areaDownloading) return;
     _areaPoints.add(at);
-    final Circle circle = await c.addCircle(CircleOptions(
-      geometry: at,
-      circleRadius: 5,
-      circleColor: '#1565C0',
-      circleStrokeColor: '#FFFFFF',
-      circleStrokeWidth: 2,
-    ));
+    final Circle circle = await c.addCircle(
+      CircleOptions(
+        geometry: at,
+        circleRadius: 5,
+        circleColor: '#1565C0',
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: 2,
+      ),
+    );
     _areaVertexCircles.add(circle);
     await _redrawAreaPolygon();
     if (mounted) setState(() {});
@@ -1427,7 +1518,10 @@ class _MapScreenState extends State<MapScreen> {
       final List<List<double>> ring = _areaPoints
           .map((LatLng p) => <double>[p.longitude, p.latitude])
           .toList();
-      ring.add(<double>[_areaPoints.first.longitude, _areaPoints.first.latitude]);
+      ring.add(<double>[
+        _areaPoints.first.longitude,
+        _areaPoints.first.latitude,
+      ]);
       data = <String, dynamic>{
         'type': 'Feature',
         'geometry': <String, dynamic>{
@@ -1553,8 +1647,9 @@ class _MapScreenState extends State<MapScreen> {
       if (indexErr != null) {
         _showTopToast('Area saved, but index failed: $indexErr', error: true);
       } else {
-        final String tail =
-            stats == null ? '' : ' · ${stats.poisInserted} POIs';
+        final String tail = stats == null
+            ? ''
+            : ' · ${stats.poisInserted} POIs';
         _showTopToast('Area downloaded$tail');
       }
     } on OfflineNotAvailable catch (e) {
@@ -1643,7 +1738,11 @@ class _MapScreenState extends State<MapScreen> {
 
   /// Desktop camera updates from the webview, mirroring [_onControllerChanged].
   void _onWebCameraChanged(
-      double lat, double lng, double zoom, double bearing) {
+    double lat,
+    double lng,
+    double zoom,
+    double bearing,
+  ) {
     if (!mounted) return;
     setState(() {
       _mapCenter = LatLng(lat, lng);
@@ -1681,8 +1780,7 @@ class _MapScreenState extends State<MapScreen> {
                       ? Align(
                           alignment: Alignment.centerLeft,
                           child: ConstrainedBox(
-                            constraints:
-                                const BoxConstraints(maxWidth: 480),
+                            constraints: const BoxConstraints(maxWidth: 480),
                             child: SearchCard(onTap: _openSearch),
                           ),
                         )
@@ -1697,8 +1795,9 @@ class _MapScreenState extends State<MapScreen> {
                       // Narrower on phones so the coord chip doesn't visually
                       // collide with the status badges in the top-right column.
                       constraints: BoxConstraints(
-                        maxWidth:
-                            MediaQuery.of(context).size.width < 600 ? 200 : 260,
+                        maxWidth: MediaQuery.of(context).size.width < 600
+                            ? 200
+                            : 260,
                       ),
                       child: CoordCard(
                         coordsText: _formatCoords(_mapCenter),
@@ -1721,7 +1820,8 @@ class _MapScreenState extends State<MapScreen> {
                         onUndo: (_areaPoints.isEmpty || _areaDownloading)
                             ? null
                             : _undoAreaPoint,
-                        onDownload: (_areaPoints.length >= 3 && !_areaDownloading)
+                        onDownload:
+                            (_areaPoints.length >= 3 && !_areaDownloading)
                             ? _downloadArea
                             : null,
                       ),
@@ -1734,6 +1834,14 @@ class _MapScreenState extends State<MapScreen> {
           // All status chips/toasts in one vertical stack hugging the top-right
           // corner: tier pill, then zoom badge, status badge and toast below it.
           _buildTopRightStack(),
+          // Bottom-left credit. Sits underneath the action panel so it only
+          // peeks out when the panel is collapsed; the panel covers it cleanly
+          // when expanded.
+          const Positioned(
+            left: 12,
+            bottom: 10,
+            child: SafeArea(top: false, child: _BuiltByFooter()),
+          ),
           Positioned(
             right: 16,
             // Raised so the bottom-most FAB (GPS) clears the action bar, which
@@ -1754,8 +1862,9 @@ class _MapScreenState extends State<MapScreen> {
                     tooltip: satelliteActive
                         ? 'Switch to map view'
                         : 'Switch to satellite view',
-                    backgroundColor:
-                        satelliteActive ? TacticalPalette.accent : null,
+                    backgroundColor: satelliteActive
+                        ? TacticalPalette.accent
+                        : null,
                     foregroundColor: satelliteActive ? Colors.white : null,
                     onPressed: _toggleSatelliteBasemap,
                     child: Icon(
@@ -1794,8 +1903,10 @@ class _MapScreenState extends State<MapScreen> {
                   IgnorePointer(
                     child: Container(
                       margin: const EdgeInsets.only(top: 8),
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
                       decoration: BoxDecoration(
                         color: TacticalPalette.panel.withValues(alpha: 0.82),
                         borderRadius: BorderRadius.circular(6),
@@ -1830,6 +1941,33 @@ class _MapScreenState extends State<MapScreen> {
   }
 }
 
+/// Tiny credit chip pinned to the map's bottom-left corner. Stays out of
+/// the way of the action panel: when the panel is expanded it covers this;
+/// when collapsed, the footer is visible.
+class _BuiltByFooter extends StatelessWidget {
+  const _BuiltByFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: TacticalPalette.panelTranslucent,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: TacticalPalette.divider),
+      ),
+      child: const Text(
+        'Built by Parv Tiwari & Parth Gupta',
+        style: TextStyle(
+          fontSize: 10,
+          color: TacticalPalette.textDim,
+          height: 1.2,
+        ),
+      ),
+    );
+  }
+}
+
 class _TierPill extends StatelessWidget {
   const _TierPill();
 
@@ -1844,9 +1982,9 @@ class _TierPill extends StatelessWidget {
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const PlansScreen()),
-        ),
+        onTap: () => Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const PlansScreen())),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
@@ -1894,7 +2032,9 @@ class _StatusBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: TacticalPalette.panel,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: TacticalPalette.accent.withValues(alpha: 0.5)),
+        border: Border.all(
+          color: TacticalPalette.accent.withValues(alpha: 0.5),
+        ),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.08),
@@ -1906,8 +2046,11 @@ class _StatusBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.push_pin_outlined,
-              size: iconSize, color: TacticalPalette.accent),
+          Icon(
+            Icons.push_pin_outlined,
+            size: iconSize,
+            color: TacticalPalette.accent,
+          ),
           SizedBox(width: compact ? 5 : 6),
           Text(
             message,
@@ -1943,7 +2086,9 @@ class _ZoomBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: TacticalPalette.panel,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: TacticalPalette.accent.withValues(alpha: 0.5)),
+        border: Border.all(
+          color: TacticalPalette.accent.withValues(alpha: 0.5),
+        ),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.08),
@@ -1977,8 +2122,11 @@ class _ToastBadge extends StatelessWidget {
   final String message;
   final bool error;
   final bool compact;
-  const _ToastBadge(
-      {required this.message, this.error = false, this.compact = false});
+  const _ToastBadge({
+    required this.message,
+    this.error = false,
+    this.compact = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2053,14 +2201,16 @@ class _AreaControlBar extends StatelessWidget {
     final String hint = downloading
         ? 'Downloading area…'
         : pointCount < 3
-            ? 'Tap the map to add points ($pointCount/3)'
-            : '$pointCount points · tap Download';
+        ? 'Tap the map to add points ($pointCount/3)'
+        : '$pointCount points · tap Download';
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
       decoration: BoxDecoration(
         color: TacticalPalette.panel,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: TacticalPalette.accent.withValues(alpha: 0.5)),
+        border: Border.all(
+          color: TacticalPalette.accent.withValues(alpha: 0.5),
+        ),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.08),
