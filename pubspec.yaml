@@ -104,6 +104,11 @@ flutter:
     - assets/glyphs/Noto Sans Bold/
     - assets/glyphs/Noto Sans Italic/
     - assets/sprite/
+    # Low-zoom basemap shipped with the app. LocalTileServer extracts it to
+    # a writable path on first use and serves tiles from it after any
+    # imported/downloaded region misses but before the upstream proxy — so
+    # wide-area panning works instantly even on slow networks.
+    - assets/basemap/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

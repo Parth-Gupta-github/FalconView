@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import 'mbtiles_tile_source.dart';
 
@@ -56,8 +58,17 @@ class LocalTileServer {
   // re-fetching, far below what we'd worry about on a desktop process.
   static const int _upstreamCacheCapacity = 500;
 
+  /// Bundled MBTiles asset path. Lives in the app bundle, extracted to a
+  /// writable location on first use because sqflite needs a real file path.
+  static const String _bundledMbtilesAsset = 'assets/basemap/world.mbtiles';
+
   HttpServer? _server;
   final List<MbtilesTileSource> _sources = <MbtilesTileSource>[];
+  MbtilesTileSource? _bundledWorld;
+  Future<MbtilesTileSource?>? _bundledWorldLoading;
+  // Remember a failure so we don't retry rootBundle.load() on every tile miss
+  // (12 MB asset = expensive to keep re-loading if it's somehow broken).
+  bool _bundledWorldFailed = false;
   final http.Client _upstream;
   final String _upstreamTileJsonUrl;
   String? _resolvedUpstreamTileUrl;
@@ -196,6 +207,25 @@ class LocalTileServer {
       return;
     }
 
+    // Bundled fallback — a low-zoom MBTiles shipped with the app so wide-area
+    // panning works instantly with no network. Sits between user-imported
+    // regions (which take precedence) and the upstream proxy.
+    final MbtilesTileSource? bundle = await _ensureBundledWorld();
+    if (bundle != null) {
+      final Uint8List? bytes = await bundle.rawTile(z, x, y);
+      if (bytes != null && bytes.isNotEmpty) {
+        final bool gz =
+            bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
+        res.statusCode = HttpStatus.ok;
+        res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
+        if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
+        res.headers.set('Access-Control-Allow-Origin', '*');
+        res.add(bytes);
+        await res.close();
+        return;
+      }
+    }
+
     // MBTiles miss — try the upstream provider so the basemap covers tiles
     // outside any downloaded region when the user is online.
     //
@@ -231,6 +261,52 @@ class LocalTileServer {
     // configured at all). Mark loaded-but-empty so MapLibre stops asking.
     res.statusCode = HttpStatus.noContent;
     await res.close();
+  }
+
+  /// Returns the bundled-world MBTiles handle, lazily extracting the asset
+  /// to a writable path on first access (sqflite can only open from a file
+  /// path, not from in-memory bytes). Subsequent callers either get the
+  /// cached handle or piggy-back on the in-flight load. On failure, marks
+  /// itself as failed so a 12 MB rootBundle.load isn't retried on every miss.
+  Future<MbtilesTileSource?> _ensureBundledWorld() async {
+    if (_bundledWorld != null) return _bundledWorld;
+    if (_bundledWorldFailed) return null;
+    final Future<MbtilesTileSource?>? inFlight = _bundledWorldLoading;
+    if (inFlight != null) return inFlight;
+
+    final Future<MbtilesTileSource?> work = _loadBundledWorld();
+    _bundledWorldLoading = work;
+    try {
+      final MbtilesTileSource? result = await work;
+      if (result == null) {
+        _bundledWorldFailed = true;
+      } else {
+        _bundledWorld = result;
+      }
+      return result;
+    } finally {
+      _bundledWorldLoading = null;
+    }
+  }
+
+  Future<MbtilesTileSource?> _loadBundledWorld() async {
+    try {
+      final Directory docs = await getApplicationDocumentsDirectory();
+      final String dstPath = p.join(docs.path, 'bundled_world.mbtiles');
+      final File dst = File(dstPath);
+      if (!await dst.exists()) {
+        final ByteData data = await rootBundle.load(_bundledMbtilesAsset);
+        await dst.writeAsBytes(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+          flush: true,
+        );
+        debugPrint('LocalTileServer: extracted bundled MBTiles → $dstPath');
+      }
+      return await MbtilesTileSource.open(dstPath);
+    } catch (e) {
+      debugPrint('LocalTileServer: bundled world.mbtiles unavailable: $e');
+      return null;
+    }
   }
 
   Future<_UpstreamFetch> _fetchUpstreamTile(int z, int x, int y) async {
@@ -424,6 +500,12 @@ class LocalTileServer {
       await s.close();
     }
     _sources.clear();
+    if (_bundledWorld != null) {
+      try {
+        await _bundledWorld!.close();
+      } catch (_) {}
+      _bundledWorld = null;
+    }
     _upstreamCache.clear();
     _upstreamInflight.clear();
     _upstream.close();
