@@ -4,6 +4,7 @@ import 'dart:math' show Point;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
@@ -71,6 +72,12 @@ class _MapScreenState extends State<MapScreen> {
   // MARK markers on the web map are keyed by a running id (no native handles).
   int _webMarkSeq = 0;
 
+  // Desktop online/offline parity: when online we render the full OpenFreeMap
+  // style (all POIs); when offline we fall back to the downloaded offline
+  // tiles. Mirrors how the native SDK blends cache + network on mobile.
+  bool _isOnline = true;
+  StreamSubscription<List<ConnectivityResult>>? _connSub;
+
   final LocationService _locationService = LocationService();
 
   LatLng _mapCenter = _kInitialCenter;
@@ -109,7 +116,25 @@ class _MapScreenState extends State<MapScreen> {
     _loadSatelliteBasemap();
     _loadRenderStyle();
     _initOfflineMap();
+    _watchConnectivity();
     subscriptionService.addListener(_onTierChanged);
+  }
+
+  /// Desktop only: track connectivity so the basemap can switch between the
+  /// full online style (all POIs) and the offline downloaded tiles, matching
+  /// the native SDK's online/offline behaviour on mobile.
+  void _watchConnectivity() {
+    if (kIsWeb || !_isDesktopMap) return;
+    bool isUp(List<ConnectivityResult> r) =>
+        r.any((ConnectivityResult c) => c != ConnectivityResult.none);
+    Connectivity().checkConnectivity().then((List<ConnectivityResult> r) {
+      if (mounted && isUp(r) != _isOnline) setState(() => _isOnline = isUp(r));
+    });
+    _connSub = Connectivity().onConnectivityChanged.listen(
+      (List<ConnectivityResult> r) {
+        if (mounted && isUp(r) != _isOnline) setState(() => _isOnline = isUp(r));
+      },
+    );
   }
 
   /// Starts the local tile server and, if any MBTiles regions are imported,
@@ -380,7 +405,7 @@ class _MapScreenState extends State<MapScreen> {
   Circle? _trackFromCircle;
   Circle? _trackToCircle;
   final RoutingService _routing = RoutingService();
-  final OfflineRepository _offline = OfflineRepository();
+  final OfflineRepository _offline = offlineRepository;
   int _routingSeq = 0;
 
   Circle? _gpsHalo;
@@ -471,6 +496,8 @@ class _MapScreenState extends State<MapScreen> {
     _zoomTimer?.cancel();
     _gpsSub?.cancel();
     _gpsSub = null;
+    _connSub?.cancel();
+    _connSub = null;
     _controller?.removeListener(_onControllerChanged);
     _controller?.onSymbolTapped.remove(_onSymbolTapped);
     subscriptionService.removeListener(_onTierChanged);
@@ -1505,8 +1532,14 @@ class _MapScreenState extends State<MapScreen> {
   /// has no binding. Both consume the same style string (online URL or the
   /// offline localhost-tile JSON).
   Widget _buildBasemap(TileConfig cfg) {
-    final String style = _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl;
     if (_isDesktopMap) {
+      // Online → full OpenFreeMap style (all POIs/labels), exactly like the
+      // native map. Offline → the downloaded localhost tiles. This is why the
+      // map no longer degrades to the stripped style after a download while
+      // you still have a connection.
+      final String style = _isOnline
+          ? (_renderStyleJson ?? cfg.styleUrl)
+          : (_offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl);
       return WebMapView(
         styleJson: style,
         onControllerReady: _onWebMapReady,
@@ -1516,6 +1549,9 @@ class _MapScreenState extends State<MapScreen> {
         },
       );
     }
+    // Mobile/web: the native SDK blends its own cache with the network, so the
+    // offline style (when set) takes precedence, then the bundled/online style.
+    final String style = _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl;
     return MapLibreMap(
       styleString: style,
       initialCameraPosition: const CameraPosition(
@@ -1692,10 +1728,18 @@ class _MapScreenState extends State<MapScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  // Always-visible build credit, bottom-left above the panel.
+                  KeyedSubtree(
+                    key: _actionPanelKey,
+                    child: ActionPanel(
+                      mode: _mode,
+                      onModeToggled: _onModeToggled,
+                      onClear: _onClear,
+                    ),
+                  ),
+                  // Always-visible build credit, bottom-most left below the panel.
                   IgnorePointer(
                     child: Container(
-                      margin: const EdgeInsets.only(bottom: 8),
+                      margin: const EdgeInsets.only(top: 8),
                       padding:
                           const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
@@ -1710,14 +1754,6 @@ class _MapScreenState extends State<MapScreen> {
                           fontWeight: FontWeight.w500,
                         ),
                       ),
-                    ),
-                  ),
-                  KeyedSubtree(
-                    key: _actionPanelKey,
-                    child: ActionPanel(
-                      mode: _mode,
-                      onModeToggled: _onModeToggled,
-                      onClear: _onClear,
                     ),
                   ),
                 ],

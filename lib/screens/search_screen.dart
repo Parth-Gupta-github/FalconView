@@ -34,7 +34,7 @@ class _SearchScreenState extends State<SearchScreen> {
   SearchTab _tab = SearchTab.search;
   final TextEditingController _controller = TextEditingController();
   final NominatimService _nominatim = NominatimService();
-  final OfflineRepository _offline = OfflineRepository();
+  final OfflineRepository _offline = offlineRepository;
   final LocationService _locationService = LocationService();
 
   // One-shot GPS snapshot used to render a distance chip on each result.

@@ -40,6 +40,9 @@ ThemeData buildFalconViewTheme() {
     dividerColor: TacticalPalette.divider,
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
+      // Cap the width so bottom toasts don't span an entire desktop monitor.
+      // ~420 is full-bleed on phones and a tidy centered box on web/desktop.
+      width: 420,
       backgroundColor: TacticalPalette.textPrimary,
       contentTextStyle: const TextStyle(color: Colors.white, fontSize: 13),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),

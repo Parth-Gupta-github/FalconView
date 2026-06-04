@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -438,13 +438,20 @@ class OfflineRepository {
 
   Future<List<Place>> listDownloaded() async {
     if (kIsWeb) return const <Place>[];
-    final List<OfflineRegion> regions = await getListOfRegions();
     final List<Place> out = [];
-    for (final OfflineRegion r in regions) {
-      final Place? p = _placeFromRegion(r);
-      if (p != null) out.add(p);
+    // Native maplibre offline regions (Android/iOS). On desktop the plugin has
+    // no implementation, so getListOfRegions throws MissingPluginException —
+    // guard it so the downloaded/imported MBTiles regions below still show.
+    try {
+      final List<OfflineRegion> regions = await getListOfRegions();
+      for (final OfflineRegion r in regions) {
+        final Place? p = _placeFromRegion(r);
+        if (p != null) out.add(p);
+      }
+    } catch (e) {
+      debugPrint('getListOfRegions unavailable (desktop?): $e');
     }
-    // Imported MBTiles regions live in our own registry, not MapLibre's store.
+    // Imported/downloaded MBTiles regions live in our own registry.
     out.addAll(await _loadMbtilesRegions());
     return out;
   }
@@ -562,3 +569,9 @@ class OfflineRepository {
     }
   }
 }
+
+/// App-wide singleton so the map and search screens share ONE repository.
+/// Downloads run on this instance, so navigating between screens no longer
+/// orphans an in-flight download, and the registry/index state stays
+/// consistent across the app.
+final OfflineRepository offlineRepository = OfflineRepository();

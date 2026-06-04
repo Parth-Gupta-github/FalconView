@@ -49,6 +49,7 @@ dependencies:
   file_picker: ^8.1.2
   flutter_plugin_android_lifecycle: 2.0.24
   flutter_inappwebview: ^6.1.5
+  connectivity_plus: ^7.1.1
 
 
 dev_dependencies:
@@ -80,6 +81,9 @@ flutter_launcher_icons:
     generate: true
     image_path: "assets/icon/icon.png"
     icon_size: 256
+  macos:
+    generate: true
+    image_path: "assets/icon/icon.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
