@@ -59,8 +59,8 @@ class LocalTileServer {
   // Dedup map: when MapLibre fires several concurrent requests for the same
   // tile during a pan/zoom, all callers await the same in-flight Future
   // instead of each opening its own network round-trip.
-  final Map<String, Future<Uint8List?>> _upstreamInflight =
-      <String, Future<Uint8List?>>{};
+  final Map<String, Future<_UpstreamFetch>> _upstreamInflight =
+      <String, Future<_UpstreamFetch>>{};
 
   // Asset bytes are cached after first read so MapLibre's flood of requests
   // for each glyph range (one per font × one per Unicode block × per zoom)
@@ -184,29 +184,43 @@ class LocalTileServer {
     }
 
     // MBTiles miss — try the upstream provider so the basemap covers tiles
-    // outside any downloaded region when the user is online. Failures
-    // (timeout, offline, 5xx) drop through to a 204 so MapLibre renders
-    // empty tiles without surfacing an error.
-    final Uint8List? upstreamBytes = await _fetchUpstreamTile(z, x, y);
-    if (upstreamBytes != null && upstreamBytes.isNotEmpty) {
-      final bool gz = upstreamBytes.length >= 2 &&
-          upstreamBytes[0] == 0x1f &&
-          upstreamBytes[1] == 0x8b;
+    // outside any downloaded region when the user is online.
+    //
+    // A failed upstream MUST NOT return 204 here: MapLibre treats 204 as
+    // "loaded but empty, never retry," so a single transient hiccup would
+    // leave the tile permanently blank until the user invalidated the
+    // source. Use 503 for transient errors so MapLibre re-requests on the
+    // next pan/zoom (and 204 only when the response was genuinely "this
+    // tile doesn't exist" — a 4xx from upstream).
+    final _UpstreamFetch fetched = await _fetchUpstreamTile(z, x, y);
+    if (fetched.bytes != null && fetched.bytes!.isNotEmpty) {
+      final Uint8List body = fetched.bytes!;
+      final bool gz =
+          body.length >= 2 && body[0] == 0x1f && body[1] == 0x8b;
       res.statusCode = HttpStatus.ok;
       res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
       if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
       res.headers.set('Access-Control-Allow-Origin', '*');
-      res.add(upstreamBytes);
+      res.add(body);
+      await res.close();
+      return;
+    }
+    if (fetched.transient) {
+      // Tells MapLibre "try me again on the next pan." Better than 204,
+      // which would leave the tile permanently blank after one network blip.
+      res.statusCode = HttpStatus.serviceUnavailable;
+      res.headers.set('Access-Control-Allow-Origin', '*');
       await res.close();
       return;
     }
 
-    // Truly nothing — empty, not an error.
+    // Genuine "no data here" (upstream said 4xx, or we have no upstream
+    // configured at all). Mark loaded-but-empty so MapLibre stops asking.
     res.statusCode = HttpStatus.noContent;
     await res.close();
   }
 
-  Future<Uint8List?> _fetchUpstreamTile(int z, int x, int y) async {
+  Future<_UpstreamFetch> _fetchUpstreamTile(int z, int x, int y) async {
     final String key = '$z/$x/$y';
 
     // Cache hit — bump to MRU and return immediately. This is what makes
@@ -214,35 +228,39 @@ class LocalTileServer {
     final Uint8List? cached = _upstreamCache.remove(key);
     if (cached != null) {
       _upstreamCache[key] = cached;
-      return cached;
+      return _UpstreamFetch.ok(cached);
     }
 
     // A concurrent caller is already fetching this tile — piggy-back on the
     // same Future so MapLibre's burst of identical requests during a pan
     // only triggers one network round-trip.
-    final Future<Uint8List?>? inFlight = _upstreamInflight[key];
+    final Future<_UpstreamFetch>? inFlight = _upstreamInflight[key];
     if (inFlight != null) return inFlight;
 
-    final Future<Uint8List?> work = _doFetchUpstreamTile(z, x, y, key);
+    final Future<_UpstreamFetch> work = _doFetchUpstreamTile(z, x, y);
     _upstreamInflight[key] = work;
     try {
-      final Uint8List? bytes = await work;
+      final _UpstreamFetch result = await work;
+      final Uint8List? bytes = result.bytes;
       if (bytes != null && bytes.isNotEmpty) {
         _upstreamCache[key] = bytes;
         while (_upstreamCache.length > _upstreamCacheCapacity) {
           _upstreamCache.remove(_upstreamCache.keys.first);
         }
       }
-      return bytes;
+      return result;
     } finally {
       _upstreamInflight.remove(key);
     }
   }
 
-  Future<Uint8List?> _doFetchUpstreamTile(
-      int z, int x, int y, String key) async {
+  Future<_UpstreamFetch> _doFetchUpstreamTile(int z, int x, int y) async {
     final String? template = await _resolveUpstreamTileUrl();
-    if (template == null) return null;
+    if (template == null) {
+      // No upstream URL resolved — could be offline or TileJSON unreachable.
+      // Treat as transient so a later pan retries once we have network.
+      return const _UpstreamFetch.transient();
+    }
     final String url = template
         .replaceAll('{z}', '$z')
         .replaceAll('{x}', '$x')
@@ -251,16 +269,21 @@ class LocalTileServer {
       final http.Response r = await _upstream
           .get(Uri.parse(url), headers: <String, String>{
             'User-Agent': _upstreamUserAgent,
-            // Ask for the gzipped payload so we can serve it back verbatim
-            // to MapLibre with Content-Encoding: gzip (smaller cache, less
-            // bandwidth, no decompression cost on our side).
-            'Accept-Encoding': 'gzip',
           })
           .timeout(_upstreamTimeout);
-      if (r.statusCode != 200) return null;
-      return r.bodyBytes;
+      if (r.statusCode == 200) {
+        return _UpstreamFetch.ok(r.bodyBytes);
+      }
+      // 4xx from upstream → genuinely no tile here (out-of-range zoom,
+      // ocean tile, etc.). Tell MapLibre to stop asking (204 path).
+      if (r.statusCode >= 400 && r.statusCode < 500) {
+        return const _UpstreamFetch.notFound();
+      }
+      // 5xx or anything else unexpected → transient, retry on next pan.
+      return const _UpstreamFetch.transient();
     } catch (_) {
-      return null;
+      // Network error, timeout, DNS failure — all transient.
+      return const _UpstreamFetch.transient();
     }
   }
 
@@ -392,4 +415,21 @@ class LocalTileServer {
     _upstreamInflight.clear();
     _upstream.close();
   }
+}
+
+/// Outcome of an upstream tile fetch. Distinguishes "tile bytes are here",
+/// "upstream says 4xx, this tile genuinely doesn't exist" (route to 204), and
+/// "transient failure — try me again on the next pan" (route to 503). Crucial
+/// because MapLibre treats 204 as a permanent loaded-empty state and would
+/// never re-request a tile that hit one network blip otherwise.
+class _UpstreamFetch {
+  final Uint8List? bytes;
+  final bool transient;
+  const _UpstreamFetch.ok(this.bytes) : transient = false;
+  const _UpstreamFetch.notFound()
+      : bytes = null,
+        transient = false;
+  const _UpstreamFetch.transient()
+      : bytes = null,
+        transient = true;
 }
