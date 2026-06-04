@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:http/http.dart' as http;
 
 import 'mbtiles_tile_source.dart';
 
@@ -11,15 +12,34 @@ import 'mbtiles_tile_source.dart';
 /// so this is the bridge that lets it render the basemap fully offline.
 ///
 /// Routes:
-///   GET /tiles/{z}/{x}/{y}.pbf       → next-hit MBTiles lookup
+///   GET /tiles/{z}/{x}/{y}.pbf       → MBTiles hit, else proxied upstream
 ///   GET /fonts/{fontstack}/{range}.pbf → bundled Noto Sans glyph range
 ///   GET /sprite/{name}.{json,png}    → bundled Liberty sprite
 ///
-/// Tiles missing from every region return 204 (MapLibre treats as empty).
+/// Tile flow: try each registered MBTiles in order; on a miss try the
+/// upstream tile provider (OpenFreeMap) so the basemap covers the whole
+/// world when online while still serving downloaded regions from disk.
+/// Network failure or no internet → 204 (MapLibre renders an empty tile).
 /// Missing glyphs/sprite return 404 (MapLibre falls back gracefully).
 class LocalTileServer {
+  LocalTileServer({http.Client? upstreamClient, String? upstreamTileUrlTemplate})
+      : _upstream = upstreamClient ?? http.Client(),
+        _upstreamTileUrlTemplate =
+            upstreamTileUrlTemplate ?? _defaultUpstreamTileUrl;
+
+  // OpenFreeMap planet vector tiles — matches what OfflineSearchIndex
+  // resolves at runtime from style.json. Hardcoded here to keep this
+  // module standalone; if OpenFreeMap ever changes paths, update this.
+  static const String _defaultUpstreamTileUrl =
+      'https://tiles.openfreemap.org/planet/{z}/{x}/{y}.pbf';
+  static const String _upstreamUserAgent =
+      'FalconView/1.0 (local tile proxy; contact: tarun@igismap.com)';
+  static const Duration _upstreamTimeout = Duration(seconds: 10);
+
   HttpServer? _server;
   final List<MbtilesTileSource> _sources = <MbtilesTileSource>[];
+  final http.Client _upstream;
+  final String _upstreamTileUrlTemplate;
 
   // Asset bytes are cached after first read so MapLibre's flood of requests
   // for each glyph range (one per font × one per Unicode block × per zoom)
@@ -141,9 +161,46 @@ class LocalTileServer {
       await res.close();
       return;
     }
-    // No region has this tile — empty, not an error.
+
+    // MBTiles miss — try the upstream provider so the basemap covers tiles
+    // outside any downloaded region when the user is online. Failures
+    // (timeout, offline, 5xx) drop through to a 204 so MapLibre renders
+    // empty tiles without surfacing an error.
+    final Uint8List? upstreamBytes = await _fetchUpstreamTile(z, x, y);
+    if (upstreamBytes != null && upstreamBytes.isNotEmpty) {
+      final bool gz = upstreamBytes.length >= 2 &&
+          upstreamBytes[0] == 0x1f &&
+          upstreamBytes[1] == 0x8b;
+      res.statusCode = HttpStatus.ok;
+      res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
+      if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
+      res.headers.set('Access-Control-Allow-Origin', '*');
+      res.add(upstreamBytes);
+      await res.close();
+      return;
+    }
+
+    // Truly nothing — empty, not an error.
     res.statusCode = HttpStatus.noContent;
     await res.close();
+  }
+
+  Future<Uint8List?> _fetchUpstreamTile(int z, int x, int y) async {
+    final String url = _upstreamTileUrlTemplate
+        .replaceAll('{z}', '$z')
+        .replaceAll('{x}', '$x')
+        .replaceAll('{y}', '$y');
+    try {
+      final http.Response r = await _upstream
+          .get(Uri.parse(url), headers: <String, String>{
+            'User-Agent': _upstreamUserAgent,
+          })
+          .timeout(_upstreamTimeout);
+      if (r.statusCode != 200) return null;
+      return r.bodyBytes;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _handleFont(List<String> seg, HttpResponse res) async {
@@ -221,5 +278,6 @@ class LocalTileServer {
       await s.close();
     }
     _sources.clear();
+    _upstream.close();
   }
 }
