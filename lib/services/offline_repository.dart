@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -427,26 +427,45 @@ class OfflineRepository {
 
   Future<List<Place>> listDownloaded() async {
     if (kIsWeb) return const <Place>[];
-    final List<OfflineRegion> regions = await getListOfRegions();
-    final List<Place> out = [];
-    for (final OfflineRegion r in regions) {
-      final Place? p = _placeFromRegion(r);
-      if (p != null) out.add(p);
+    // maplibre_gl's getListOfRegions has no desktop binding — calling it on
+    // Windows/macOS/Linux throws MissingPluginException, which previously
+    // caused the entire Downloaded tab to come back empty even when our own
+    // .mbtiles registry had regions. Treat the throw as "no native regions"
+    // (which is always true on desktop) and let the MBTiles registry below
+    // contribute its rows.
+    final List<Place> out = <Place>[];
+    try {
+      final List<OfflineRegion> regions = await getListOfRegions();
+      for (final OfflineRegion r in regions) {
+        final Place? p = _placeFromRegion(r);
+        if (p != null) out.add(p);
+      }
+    } catch (e) {
+      debugPrint('getListOfRegions unavailable (desktop?): $e');
     }
-    // Imported MBTiles regions live in our own registry, not MapLibre's store.
+    // Imported / desktop-downloaded MBTiles regions live in our own registry,
+    // not MapLibre's store.
     out.addAll(await _loadMbtilesRegions());
     return out;
   }
 
   Future<void> delete(int regionId) async {
     if (kIsWeb) return;
-    // Imported MBTiles regions have no MapLibre offline region — drop the
-    // registry entry (which deletes the .mbtiles file) and the index DB.
+    // Imported / desktop-downloaded MBTiles regions have no MapLibre offline
+    // region — drop the registry entry (which deletes the .mbtiles file) and
+    // the index DB.
     if (await _isMbtilesRegion(regionId)) {
       await _removeMbtilesRegion(regionId);
       await _index.deleteIndex(regionId);
     } else {
-      await deleteOfflineRegion(regionId);
+      // Native offline region — only exists on mobile. Wrap defensively so
+      // an attempt on desktop (where deleteOfflineRegion throws
+      // MissingPluginException) still cleans up the local index.
+      try {
+        await deleteOfflineRegion(regionId);
+      } catch (e) {
+        debugPrint('deleteOfflineRegion unavailable (desktop?): $e');
+      }
       await _index.deleteIndex(regionId);
     }
     try {
