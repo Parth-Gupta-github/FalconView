@@ -62,6 +62,46 @@
       }
     }
 
+    // Suppress MapLibre's pan-cancellation noise before it crosses the Dart
+    // bridge. The original console.error still runs for browser devtools.
+    function isFetchAbortNoise(message) {
+      if (typeof message !== 'string') return false;
+      return message === 'Failed to fetch' ||
+             message.indexOf('Failed to fetch') >= 0 ||
+             message.indexOf('AbortError') >= 0 ||
+             message.indexOf('The operation was aborted') >= 0;
+    }
+    (function () {
+      var orig = console.error.bind(console);
+      console.error = function () {
+        try {
+          var parts = [];
+          var anyRealError = false;
+          for (var i = 0; i < arguments.length; i++) {
+            var a = arguments[i];
+            if (a instanceof Error) {
+              var em = a.message || a.name || 'Error';
+              if (isFetchAbortNoise(em)) continue;
+              parts.push(em + (a.stack ? '\n' + a.stack : ''));
+              anyRealError = true;
+            } else if (typeof a === 'string') {
+              if (isFetchAbortNoise(a)) continue;
+              parts.push(a);
+              anyRealError = true;
+            } else {
+              try { parts.push(JSON.stringify(a)); }
+              catch (_) { parts.push(String(a)); }
+              anyRealError = true;
+            }
+          }
+          if (anyRealError && parts.length > 0) {
+            emit('error', { message: parts.join(' | '), cmd: 'console.error' });
+          }
+        } catch (_) {}
+        return orig.apply(console, arguments);
+      };
+    })();
+
     var map = null;
     var markers = {};   // id -> maplibre.Marker
     var rasterIds = {}; // id -> {source, layer}

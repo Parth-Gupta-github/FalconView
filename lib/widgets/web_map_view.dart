@@ -39,7 +39,7 @@ class WebMapView extends StatefulWidget {
 
   /// Forwarded camera updates: (lat, lng, zoom, bearing).
   final void Function(double lat, double lng, double zoom, double bearing)?
-      onCameraChanged;
+  onCameraChanged;
 
   /// Forwarded map taps: (lat, lng, xPixel, yPixel).
   final void Function(double lat, double lng, double x, double y)? onMapClick;
@@ -60,7 +60,8 @@ class _WebMapViewState extends State<WebMapView> {
       ?..onCameraChanged = widget.onCameraChanged
       ..onMapClick = widget.onMapClick;
     // Push a new style if the parent swapped it (e.g. offline MBTiles imported).
-    if (oldWidget.styleJson != widget.styleJson && (_controller?.isReady ?? false)) {
+    if (oldWidget.styleJson != widget.styleJson &&
+        (_controller?.isReady ?? false)) {
       _controller!.setStyle(widget.styleJson, diff: false);
     }
   }
@@ -82,11 +83,9 @@ class _WebMapViewState extends State<WebMapView> {
       ),
       onWebViewCreated: (InAppWebViewController c) {
         _web = c;
-        final WebMapController controller = WebMapController(
-          (String js) async {
-            await _web?.evaluateJavascript(source: js);
-          },
-        );
+        final WebMapController controller = WebMapController((String js) async {
+          await _web?.evaluateJavascript(source: js);
+        });
         controller.onCameraChanged = widget.onCameraChanged;
         controller.onMapClick = widget.onMapClick;
         controller.onReady = () {
@@ -109,7 +108,9 @@ class _WebMapViewState extends State<WebMapView> {
                 (Object? k, Object? v) => MapEntry<String, dynamic>('$k', v),
               );
               if (e['type'] == 'error') {
-                debugPrint('WebMapView JS error: ${e['message']} (${e['cmd']})');
+                debugPrint(
+                  'WebMapView JS error: ${e['message']} (${e['cmd']})',
+                );
                 return;
               }
               _controller?.handleEvent(e);
@@ -118,9 +119,17 @@ class _WebMapViewState extends State<WebMapView> {
         );
       },
       onConsoleMessage: (_, ConsoleMessage msg) {
-        if (msg.messageLevel == ConsoleMessageLevel.ERROR) {
-          debugPrint('WebMapView console: ${msg.message}');
+        if (msg.messageLevel != ConsoleMessageLevel.ERROR) return;
+        final String m = msg.message.trim();
+        // Skip MapLibre pan-cancellation noise; real JS errors are still
+        // forwarded through the fvEvent handler above with message + context.
+        if (m == 'Error' ||
+            m == '"Error"' ||
+            m.contains('Failed to fetch') ||
+            m.contains('AbortError')) {
+          return;
         }
+        debugPrint('WebMapView console: $m');
       },
     );
   }
