@@ -11,6 +11,7 @@ import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../util/polygon_geo.dart';
 import 'mbtiles_tile_source.dart';
+import 'mbtiles_writer.dart';
 import 'offline_router.dart';
 import 'offline_search_index.dart';
 import 'routing_service.dart' show RouteResult;
@@ -65,22 +66,12 @@ class OfflineRepository {
   OfflineSearchIndex get index => _index;
   OfflineRouter get router => _router;
 
-  Future<OfflineRegion> download(
+  Future<void> download(
     Place place, {
     void Function(double percent)? onProgress,
   }) async {
     if (kIsWeb) {
       throw OfflineNotAvailable('Offline downloads are not supported on web.');
-    }
-    // The online region downloader is maplibre_gl's downloadOfflineRegion,
-    // which has no desktop (macOS/Windows/Linux) implementation — calling it
-    // there throws MissingPluginException. Degrade gracefully with a clear
-    // message instead. Importing a prebuilt .mbtiles still works on desktop.
-    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-      throw OfflineNotAvailable(
-        'Offline region download isn\'t available on desktop yet. '
-        'Import an .mbtiles file instead for offline maps.',
-      );
     }
     if (subscriptionService.tier != AppTier.pro) {
       throw OfflineNotAvailable(
@@ -88,6 +79,14 @@ class OfflineRepository {
       );
     }
     final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
+    // Desktop (macOS/Windows/Linux) has no native maplibre offline downloader,
+    // so we fetch the region's tiles into a portable .mbtiles that the
+    // LocalTileServer serves to the webview map. End result is the same as
+    // Android's downloadOfflineRegion: tap download → region works offline.
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      await _downloadToMbtiles(place, cfg, onProgress);
+      return;
+    }
     // Map tiles are square, so we always download the polygon's bounding box.
     // The POI + road-graph extracts below are what get clipped to the drawn
     // area via this predicate (null for plain rectangular regions).
@@ -139,7 +138,100 @@ class OfflineRepository {
       _lastIndexError = '$e';
     }
     if (onProgress != null) onProgress(100);
-    return region;
+  }
+
+  /// Desktop offline download: fetch the region's tiles into a portable
+  /// `.mbtiles`, build the POI index + road graph from it, and register it so
+  /// the LocalTileServer renders it and search/routing work — all offline
+  /// afterwards. The map zoom range is capped at 14 (the offline style's source
+  /// maxzoom; higher levels overzoom z14 and would just waste the download).
+  Future<void> _downloadToMbtiles(
+    Place place,
+    TileConfig cfg,
+    void Function(double percent)? onProgress,
+  ) async {
+    _lastIndexError = null;
+    _lastPoiSource = PoiSource.none;
+    _lastIndexStats = null;
+    _lastRouterError = null;
+
+    final int regionId = await _nextMbtilesRegionId();
+    final String destPath = await _mbtilesPathFor(regionId);
+    final LatLngBounds b = place.bbox;
+    final String bounds = '${b.southwest.longitude},${b.southwest.latitude},'
+        '${b.northeast.longitude},${b.northeast.latitude}';
+    final int zMin = cfg.offlineMinZoom.toInt();
+    final int zMax = cfg.offlineMaxZoom.toInt() < 14 ? cfg.offlineMaxZoom.toInt() : 14;
+
+    final List<LatLng>? poly = place.polygon;
+    final bool Function(double lat, double lon)? contains =
+        (poly != null && poly.length >= 3)
+            ? (double lat, double lon) => PolygonGeo.contains(poly, lat, lon)
+            : null;
+
+    try {
+      // 1. Fetch tiles → .mbtiles (0–70%).
+      final MbtilesWriter writer = await MbtilesWriter.create(
+        destPath,
+        name: place.name,
+        bounds: bounds,
+        minZoom: zMin,
+        maxZoom: zMax,
+      );
+      int tilesWritten = 0;
+      try {
+        tilesWritten = await _index.downloadRegionToMbtiles(
+          writer,
+          b,
+          zMin: zMin,
+          zMax: zMax,
+          onProgress: (double p) => onProgress?.call(p * 0.7),
+        );
+      } finally {
+        await writer.close();
+      }
+      if (tilesWritten == 0) {
+        throw OfflineNotAvailable(
+          'No tiles could be downloaded — check your connection and try again.',
+        );
+      }
+
+      // 2. Build POI index + road graph from the downloaded .mbtiles (70–100%).
+      final MbtilesTileSource source = await MbtilesTileSource.open(destPath);
+      try {
+        final IndexBuildStats stats = await _index.buildFromMbtiles(
+          regionId,
+          source,
+          contains: contains,
+          onProgress: (double p) => onProgress?.call(70 + p * 0.3),
+        );
+        _lastPoiSource = stats.source;
+        _lastIndexStats = stats;
+        await _persistPoiSource(regionId, stats.source);
+      } finally {
+        await source.close();
+      }
+
+      // 3. Register so LocalTileServer + the offline style pick it up.
+      final Place saved = Place(
+        name: place.name,
+        subtitle: 'Offline region · ${_lastIndexStats?.poisInserted ?? 0} POIs',
+        center: place.center,
+        bbox: place.bbox,
+        polygon: place.polygon,
+        state: PlaceDownloadState.downloaded,
+        regionId: regionId,
+      );
+      await _saveMbtilesRegion(saved, destPath);
+      onProgress?.call(100);
+    } catch (e) {
+      _lastIndexError = '$e';
+      try {
+        final File f = File(destPath);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+      rethrow;
+    }
   }
 
   /// Imports a local `.mbtiles` file: copies it into app storage (the local

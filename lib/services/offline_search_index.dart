@@ -13,6 +13,7 @@ import 'package:vector_tile/vector_tile.dart';
 import '../models/place.dart';
 import '../util/tile_math.dart';
 import 'mbtiles_tile_source.dart';
+import 'mbtiles_writer.dart';
 import 'offline_router.dart';
 
 class OfflineIndexException implements Exception {
@@ -444,6 +445,77 @@ class OfflineSearchIndex {
       }
     }
     return out;
+  }
+
+  List<_TileKey> _enumerateTilesRange(LatLngBounds bbox, int zMin, int zMax) {
+    final List<_TileKey> out = <_TileKey>[];
+    for (int z = zMin; z <= zMax; z++) {
+      final TileXY tl = TileMath.latLngToTile(
+        bbox.northeast.latitude, bbox.southwest.longitude, z,
+      );
+      final TileXY br = TileMath.latLngToTile(
+        bbox.southwest.latitude, bbox.northeast.longitude, z,
+      );
+      final int xMin = tl.x < br.x ? tl.x : br.x;
+      final int xMax = tl.x < br.x ? br.x : tl.x;
+      final int yMin = tl.y < br.y ? tl.y : br.y;
+      final int yMax = tl.y < br.y ? br.y : tl.y;
+      for (int x = xMin; x <= xMax; x++) {
+        for (int y = yMin; y <= yMax; y++) {
+          out.add(_TileKey(z, x, y));
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Downloads every tile covering [bbox] across [zMin]..[zMax] from the live
+  /// OpenFreeMap tile source and writes them into [writer] as a portable
+  /// `.mbtiles`. This is the desktop equivalent of maplibre_gl's native
+  /// `downloadOfflineRegion`: afterwards the region renders fully offline via
+  /// the LocalTileServer. Returns the number of tiles actually stored.
+  Future<int> downloadRegionToMbtiles(
+    MbtilesWriter writer,
+    LatLngBounds bbox, {
+    required int zMin,
+    required int zMax,
+    void Function(double percent)? onProgress,
+  }) async {
+    final String tpl = await _resolveTileUrlTemplate();
+    final List<_TileKey> tiles = _enumerateTilesRange(bbox, zMin, zMax);
+    final int total = tiles.length;
+    int done = 0;
+    int written = 0;
+    const int concurrency = 6;
+    for (int i = 0; i < tiles.length; i += concurrency) {
+      final int end =
+          (i + concurrency < tiles.length) ? i + concurrency : tiles.length;
+      final List<_TileKey> chunk = tiles.sublist(i, end);
+      final List<Uint8List?> fetched = await Future.wait(
+        chunk.map((_TileKey t) async {
+          final String url = tpl
+              .replaceAll('{z}', '${t.z}')
+              .replaceAll('{x}', '${t.x}')
+              .replaceAll('{y}', '${t.y}');
+          try {
+            return await _fetchTile(url);
+          } catch (_) {
+            return null;
+          }
+        }),
+      );
+      for (int j = 0; j < chunk.length; j++) {
+        final Uint8List? bytes = fetched[j];
+        if (bytes != null && bytes.isNotEmpty) {
+          await writer.put(chunk[j].z, chunk[j].x, chunk[j].y, bytes);
+          written++;
+        }
+      }
+      done += chunk.length;
+      if (total > 0) onProgress?.call(done / total * 100);
+    }
+    await writer.flush();
+    return written;
   }
 
   int _extractFromTile(

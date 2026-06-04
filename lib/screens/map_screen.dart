@@ -570,6 +570,10 @@ class _MapScreenState extends State<MapScreen> {
     final Place? result = await Navigator.of(context).push<Place>(
       MaterialPageRoute(builder: (_) => const SearchScreen()),
     );
+    if (!mounted) return;
+    // The search screen can download/import regions; pick any up so they
+    // render offline (re-pushes the offline style into the webview on desktop).
+    await _initOfflineMap();
     if (result == null || !mounted) return;
     final MapLibreMapController? c = _controller;
     if (_webController != null) {
@@ -1462,6 +1466,10 @@ class _MapScreenState extends State<MapScreen> {
       final String? indexErr = _offline.lastIndexError;
       final IndexBuildStats? stats = _offline.lastIndexStats;
       await _clearAreaOverlay();
+      // Pick up the just-downloaded region: (re)start the tile server with the
+      // new MBTiles and switch the basemap to the offline style so it renders
+      // without network. On desktop this re-pushes the style into the webview.
+      await _initOfflineMap();
       if (!mounted) return;
       setState(() {
         _mode = MapMode.none;
@@ -1680,13 +1688,39 @@ class _MapScreenState extends State<MapScreen> {
             bottom: 16,
             child: SafeArea(
               top: false,
-              child: KeyedSubtree(
-                key: _actionPanelKey,
-                child: ActionPanel(
-                  mode: _mode,
-                  onModeToggled: _onModeToggled,
-                  onClear: _onClear,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  // Always-visible build credit, bottom-left above the panel.
+                  IgnorePointer(
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: TacticalPalette.panel.withValues(alpha: 0.82),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Text(
+                        'Built by Parv Tiwari & Parth Gupta',
+                        style: TextStyle(
+                          color: TacticalPalette.textDim,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+                  KeyedSubtree(
+                    key: _actionPanelKey,
+                    child: ActionPanel(
+                      mode: _mode,
+                      onModeToggled: _onModeToggled,
+                      onClear: _onClear,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
