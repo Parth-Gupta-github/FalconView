@@ -91,6 +91,7 @@ class _MapScreenState extends State<MapScreen> {
   // with no network. Null when no region has been imported yet.
   final LocalTileServer _tileServer = LocalTileServer();
   String? _offlineStyleJson;
+  List<String> _activeMbtilesPaths = const <String>[];
 
   // When true, the map ignores rotate + tilt gestures and is kept snapped to
   // north-up flat. Persisted so the choice survives an app restart. Useful
@@ -114,22 +115,38 @@ class _MapScreenState extends State<MapScreen> {
 
   /// Starts the local tile server and, if any MBTiles regions are imported,
   /// switches the basemap to render from them (offline). Safe to call again
-  /// after an import to pick up newly added regions.
+  /// after an import or desktop region download — it diffs the registered
+  /// paths against the active set and only reopens sources when something
+  /// actually changed, so it can be hooked into every navigator-pop without
+  /// flickering the basemap.
   Future<void> _initOfflineMap() async {
     if (kIsWeb) return;
     try {
       await _tileServer.start();
       final List<String> paths = await _offline.registeredMbtilesPaths();
-      await _tileServer.setSources(paths);
+      final bool changed = !_sameList(paths, _activeMbtilesPaths);
+      if (changed) {
+        await _tileServer.setSources(paths);
+        _activeMbtilesPaths = List<String>.unmodifiable(paths);
+      }
       if (!mounted) return;
-      setState(() {
-        _offlineStyleJson = paths.isEmpty
-            ? null
-            : buildOfflineStyle(_tileServer.tileUrlTemplate);
-      });
+      final String? next = paths.isEmpty
+          ? null
+          : buildOfflineStyle(_tileServer.tileUrlTemplate);
+      if (next != _offlineStyleJson) {
+        setState(() => _offlineStyleJson = next);
+      }
     } catch (e) {
       debugPrint('Offline map init failed: $e');
     }
+  }
+
+  bool _sameList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   Future<void> _loadRenderStyle() async {
@@ -570,6 +587,10 @@ class _MapScreenState extends State<MapScreen> {
     final Place? result = await Navigator.of(context).push<Place>(
       MaterialPageRoute(builder: (_) => const SearchScreen()),
     );
+    // The user may have downloaded a region or imported an .mbtiles while in
+    // the search screen — pick up any new files for the basemap. Cheap no-op
+    // when nothing changed.
+    if (mounted) await _initOfflineMap();
     if (result == null || !mounted) return;
     final MapLibreMapController? c = _controller;
     if (_webController != null) {
@@ -1475,6 +1496,9 @@ class _MapScreenState extends State<MapScreen> {
             stats == null ? '' : ' · ${stats.poisInserted} POIs';
         _showTopToast('Area downloaded$tail');
       }
+      // Desktop write a new .mbtiles into the registry. Mobile leaves the
+      // registry alone but the call is a cheap no-op.
+      await _initOfflineMap();
     } on OfflineNotAvailable catch (e) {
       if (!mounted) return;
       setState(() {

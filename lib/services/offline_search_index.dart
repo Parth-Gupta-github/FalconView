@@ -78,6 +78,10 @@ class OfflineSearchIndex {
   static const int _zMin = 12;
   static const int _zMax = 14;
 
+  // Lowest zoom we'll fetch *purely for rendering* when [build] is asked to
+  // write an MBTiles file. POI/road extraction still only runs from _zMin.
+  static const int _renderZMin = 10;
+
   static const Duration _tileTimeout = Duration(seconds: 10);
 
   // Flush the SQLite Batch every N inserts. Platform-channel decoder OOMs at
@@ -130,6 +134,15 @@ class OfflineSearchIndex {
     LatLngBounds bbox, {
     void Function(double percent)? onProgress,
     bool Function(double lat, double lon)? contains,
+    /// When supplied, every downloaded tile is also written into an MBTiles
+    /// file at this path so the desktop WebView basemap can render fully
+    /// offline. Caller is responsible for registering the file with the
+    /// local tile server afterwards. Mobile leaves this null — MapLibre
+    /// Native already cached the tiles via downloadOfflineRegion.
+    String? mbtilesOutPath,
+    /// Region label written into the MBTiles `metadata.name` row. Ignored
+    /// when [mbtilesOutPath] is null.
+    String? mbtilesName,
   }) async {
     onProgress?.call(0);
     // Stale reader on the old file would block the delete + reopen below.
@@ -141,14 +154,32 @@ class OfflineSearchIndex {
     // Same DB also holds the road graph. OfflineRouter owns the schema.
     await _router.setupTables(outDb);
 
+    // When we're writing an MBTiles bundle (desktop region download), extend
+    // the fetched range down to _renderZMin so the user can zoom out to city
+    // context. POI + road extraction still only runs from _zMin / 13 upward.
+    final bool writeMbtiles = mbtilesOutPath != null;
+    final int fetchZMin = writeMbtiles ? _renderZMin : _zMin;
+    Database? mbDb;
+    Batch? mbBatch;
+    int mbPending = 0;
+    if (writeMbtiles) {
+      final File mbFile = File(mbtilesOutPath);
+      if (await mbFile.exists()) await mbFile.delete();
+      await mbFile.parent.create(recursive: true);
+      final Database opened = await _openMbtilesOut(mbFile);
+      mbDb = opened;
+      mbBatch = opened.batch();
+    }
+
     int inserted = 0;
     int scanned = 0;
     int roadSegments = 0;
+    int tilesWritten = 0;
     final Set<int> seenNodes = <int>{};
     final Set<int> seenEdges = <int>{};
     try {
       final String tileUrlTemplate = await _resolveTileUrlTemplate();
-      final List<_TileKey> tiles = _enumerateTiles(bbox);
+      final List<_TileKey> tiles = _enumerateTiles(bbox, zMin: fetchZMin);
       final int total = tiles.length;
       int doneTiles = 0;
 
@@ -174,10 +205,18 @@ class OfflineSearchIndex {
           edgeBatch = outDb.batch();
           edgePending = 0;
         }
+        if (mbDb != null && (force || mbPending >= _chunkSize)) {
+          await mbBatch!.commit(noResult: true, continueOnError: true);
+          mbBatch = mbDb.batch();
+          mbPending = 0;
+        }
       }
 
       // Fetch tiles in parallel chunks; decode POI + road graph from each
-      // tile in the same pass — no duplicate downloads.
+      // tile in the same pass — no duplicate downloads. When writing an
+      // MBTiles bundle we keep the raw (still-gzipped) body so the local
+      // tile server can stream it untouched; decoding happens on a separate
+      // copy.
       const int concurrency = 8;
       for (int i = 0; i < tiles.length; i += concurrency) {
         final int end =
@@ -190,7 +229,7 @@ class OfflineSearchIndex {
                 .replaceAll('{x}', '${t.x}')
                 .replaceAll('{y}', '${t.y}');
             try {
-              return await _fetchTile(url);
+              return await _fetchTileRaw(url);
             } catch (_) {
               return null;
             }
@@ -198,11 +237,37 @@ class OfflineSearchIndex {
         ));
         for (int j = 0; j < chunk.length; j++) {
           scanned++;
-          final Uint8List? bytes = fetched[j];
-          if (bytes == null || bytes.isEmpty) continue;
+          final Uint8List? raw = fetched[j];
+          if (raw == null || raw.isEmpty) continue;
           final _TileKey t = chunk[j];
+
+          // MBTiles stores tiles bottom-up (TMS y); flip from XYZ.
+          final Batch? mb = mbBatch;
+          if (mb != null) {
+            final int tmsRow = ((1 << t.z) - 1) - t.y;
+            mb.insert(
+              'tiles',
+              <String, Object?>{
+                'zoom_level': t.z,
+                'tile_column': t.x,
+                'tile_row': tmsRow,
+                'tile_data': raw,
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+            mbPending++;
+            tilesWritten++;
+          }
+
+          // POI + road extractors want decoded MVT bytes.
+          if (t.z < _zMin) {
+            // Pure rendering zoom — no extraction work.
+            continue;
+          }
+          final Uint8List? decoded = _maybeGunzip(raw);
+          if (decoded == null || decoded.isEmpty) continue;
           final int added =
-              _extractFromTile(poiBatch, bytes, t.z, t.x, t.y, contains);
+              _extractFromTile(poiBatch, decoded, t.z, t.x, t.y, contains);
           inserted += added;
           poiPending += added;
           // Roads are emitted by OpenMapTiles from z13 upward in any useful
@@ -210,7 +275,7 @@ class OfflineSearchIndex {
           // motorways only.
           if (t.z >= 13) {
             roadSegments += _router.extractFromTile(
-              bytes: bytes,
+              bytes: decoded,
               z: t.z,
               x: t.x,
               y: t.y,
@@ -229,16 +294,40 @@ class OfflineSearchIndex {
         if (total > 0) onProgress?.call(doneTiles / total * 95);
       }
       await flush(force: true);
+
+      if (mbDb != null) {
+        await _writeMbtilesMetadata(
+          mbDb,
+          bbox: bbox,
+          name: mbtilesName ?? 'region-$regionId',
+          minZoom: fetchZMin,
+          maxZoom: _zMax,
+        );
+      }
+
       debugPrint(
         'MVT extract: scanned $scanned tiles, '
         '$inserted POIs, ${seenNodes.length} road nodes, '
-        '$roadSegments road segments',
+        '$roadSegments road segments'
+        '${writeMbtiles ? ", wrote $tilesWritten tiles to MBTiles" : ""}',
       );
     } catch (e, s) {
       debugPrint('MVT extract failed: $e\n$s');
+      // Clean up the partial MBTiles file so callers don't ship a broken bundle.
+      if (writeMbtiles) {
+        try {
+          await mbDb?.close();
+        } catch (_) {}
+        try {
+          final File f = File(mbtilesOutPath);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+        mbDb = null;
+      }
     }
 
     await outDb.close();
+    if (mbDb != null) await mbDb.close();
     onProgress?.call(100);
     return IndexBuildStats(
       source: inserted > 0 ? PoiSource.mvt : PoiSource.none,
@@ -408,25 +497,37 @@ class OfflineSearchIndex {
     throw OfflineIndexException('No vector tile URL found in style');
   }
 
-  Future<Uint8List?> _fetchTile(String url) async {
+  /// Returns the raw HTTP body — still gzipped if the server delivered it
+  /// that way. Used both by the MVT decode path (after [_maybeGunzip]) and by
+  /// the MBTiles writer (which stores the gzipped bytes verbatim so the local
+  /// tile server can stream them out with `Content-Encoding: gzip`).
+  Future<Uint8List?> _fetchTileRaw(String url) async {
     final http.Response res = await _client
         .get(Uri.parse(url), headers: <String, String>{
           'User-Agent': _userAgent,
         })
         .timeout(_tileTimeout);
     if (res.statusCode != 200) return null;
-    final Uint8List body = res.bodyBytes;
-    if (body.length >= 2 && body[0] == 0x1f && body[1] == 0x8b) {
-      return Uint8List.fromList(const GZipDecoder().decodeBytes(body));
+    return res.bodyBytes;
+  }
+
+  Uint8List? _maybeGunzip(Uint8List bytes) {
+    if (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
+      try {
+        return Uint8List.fromList(const GZipDecoder().decodeBytes(bytes));
+      } catch (_) {
+        return null;
+      }
     }
-    return body;
+    return bytes;
   }
 
   // ---------------- Tile enumeration + MVT decode ----------------
 
-  List<_TileKey> _enumerateTiles(LatLngBounds bbox) {
+  List<_TileKey> _enumerateTiles(LatLngBounds bbox, {int? zMin}) {
     final List<_TileKey> out = <_TileKey>[];
-    for (int z = _zMin; z <= _zMax; z++) {
+    final int lo = zMin ?? _zMin;
+    for (int z = lo; z <= _zMax; z++) {
       final TileXY tl = TileMath.latLngToTile(
         bbox.northeast.latitude, bbox.southwest.longitude, z,
       );
@@ -570,6 +671,59 @@ class OfflineSearchIndex {
         );
       },
     );
+  }
+
+  /// Schema matches the MBTiles 1.3 spec so [MbtilesTileSource] and the
+  /// existing import path can read what we write here, no special-casing.
+  Future<Database> _openMbtilesOut(File file) {
+    return openDatabase(
+      file.path,
+      version: 1,
+      onCreate: (Database db, int v) async {
+        await db.execute('''
+          CREATE TABLE tiles(
+            zoom_level INTEGER NOT NULL,
+            tile_column INTEGER NOT NULL,
+            tile_row INTEGER NOT NULL,
+            tile_data BLOB NOT NULL,
+            PRIMARY KEY (zoom_level, tile_column, tile_row)
+          )''');
+        await db.execute('''
+          CREATE TABLE metadata(
+            name TEXT,
+            value TEXT
+          )''');
+      },
+    );
+  }
+
+  Future<void> _writeMbtilesMetadata(
+    Database db, {
+    required LatLngBounds bbox,
+    required String name,
+    required int minZoom,
+    required int maxZoom,
+  }) async {
+    Future<void> put(String k, String v) async {
+      await db.insert('metadata', <String, Object?>{'name': k, 'value': v});
+    }
+    // Wipe any stragglers if the file already existed (shouldn't, but cheap).
+    await db.delete('metadata');
+    final String bounds =
+        '${bbox.southwest.longitude},${bbox.southwest.latitude},'
+        '${bbox.northeast.longitude},${bbox.northeast.latitude}';
+    final double centerLng =
+        (bbox.southwest.longitude + bbox.northeast.longitude) / 2;
+    final double centerLat =
+        (bbox.southwest.latitude + bbox.northeast.latitude) / 2;
+    await put('name', name);
+    await put('format', 'pbf');
+    await put('type', 'baselayer');
+    await put('version', '1');
+    await put('minzoom', '$minZoom');
+    await put('maxzoom', '$maxZoom');
+    await put('bounds', bounds);
+    await put('center', '$centerLng,$centerLat,$minZoom');
   }
 
   // ---------------- Search ----------------

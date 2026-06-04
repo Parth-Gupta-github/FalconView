@@ -65,29 +65,18 @@ class OfflineRepository {
   OfflineSearchIndex get index => _index;
   OfflineRouter get router => _router;
 
-  Future<OfflineRegion> download(
+  Future<void> download(
     Place place, {
     void Function(double percent)? onProgress,
   }) async {
     if (kIsWeb) {
       throw OfflineNotAvailable('Offline downloads are not supported on web.');
     }
-    // The online region downloader is maplibre_gl's downloadOfflineRegion,
-    // which has no desktop (macOS/Windows/Linux) implementation — calling it
-    // there throws MissingPluginException. Degrade gracefully with a clear
-    // message instead. Importing a prebuilt .mbtiles still works on desktop.
-    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-      throw OfflineNotAvailable(
-        'Offline region download isn\'t available on desktop yet. '
-        'Import an .mbtiles file instead for offline maps.',
-      );
-    }
     if (subscriptionService.tier != AppTier.pro) {
       throw OfflineNotAvailable(
         'Offline download is a Pro feature. Upgrade in Plans to enable it.',
       );
     }
-    final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
     // Map tiles are square, so we always download the polygon's bounding box.
     // The POI + road-graph extracts below are what get clipped to the drawn
     // area via this predicate (null for plain rectangular regions).
@@ -96,6 +85,18 @@ class OfflineRepository {
         (poly != null && poly.length >= 3)
             ? (double lat, double lon) => PolygonGeo.contains(poly, lat, lon)
             : null;
+
+    // Desktop (macOS/Windows/Linux) has no maplibre_gl Flutter binding for
+    // [downloadOfflineRegion]. Instead we walk the same tile pyramid the
+    // mobile path's index builder already fetches and write each tile to an
+    // .mbtiles bundle, which the local tile server then serves to the
+    // WebView basemap. End result: full offline rendering + search + routing,
+    // built from the same MVT extraction code mobile uses.
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      await _downloadAsMbtiles(place, contains, onProgress);
+      return;
+    }
+    final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
     final OfflineRegionDefinition definition = OfflineRegionDefinition(
       bounds: place.bbox,
       mapStyleUrl: cfg.styleUrl,
@@ -139,7 +140,87 @@ class OfflineRepository {
       _lastIndexError = '$e';
     }
     if (onProgress != null) onProgress(100);
-    return region;
+  }
+
+  /// Desktop region download: fetches tiles for [place.bbox] over HTTP, writes
+  /// them into a fresh `.mbtiles` file, extracts POIs + the road graph from
+  /// the same tile bytes, and registers the file with the imported-MBTiles
+  /// registry so [listDownloaded] and the local tile server pick it up.
+  Future<void> _downloadAsMbtiles(
+    Place place,
+    bool Function(double lat, double lon)? contains,
+    void Function(double percent)? onProgress,
+  ) async {
+    _lastIndexError = null;
+    _lastPoiSource = PoiSource.none;
+    _lastIndexStats = null;
+    _lastRouterError = null;
+
+    final int regionId = await _nextMbtilesRegionId();
+    final String destPath = await _mbtilesPathFor(regionId);
+
+    IndexBuildStats stats;
+    try {
+      stats = await _index.build(
+        regionId,
+        place.bbox,
+        contains: contains,
+        mbtilesOutPath: destPath,
+        mbtilesName: place.name,
+        onProgress: onProgress,
+      );
+      _lastPoiSource = stats.source;
+      _lastIndexStats = stats;
+      await _persistPoiSource(regionId, stats.source);
+    } catch (e, stack) {
+      // ignore: avoid_print
+      print('[OfflineSearchIndex.build mbtiles] FAILED: $e\n$stack');
+      _lastIndexError = '$e';
+      try {
+        final File f = File(destPath);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+      rethrow;
+    }
+
+    // Verify the writer actually produced a usable file before we register it.
+    // We open it as an MBTiles source and confirm at least one tile landed —
+    // catches the "every fetch failed" / "network died" scenarios that would
+    // otherwise leave us with an empty .mbtiles in the registry.
+    final File outFile = File(destPath);
+    bool ok = false;
+    if (await outFile.exists()) {
+      try {
+        final MbtilesTileSource probe = await MbtilesTileSource.open(destPath);
+        try {
+          ok = (await probe.tileCount(0, 24)) > 0;
+        } finally {
+          await probe.close();
+        }
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (!ok) {
+      _lastIndexError = _lastIndexError ?? 'MBTiles output is empty';
+      try {
+        if (await outFile.exists()) await outFile.delete();
+      } catch (_) {}
+      throw OfflineNotAvailable(
+        'Region download failed — no tiles were saved. Check your network.',
+      );
+    }
+
+    final Place stored = Place(
+      name: place.name,
+      subtitle: place.subtitle,
+      center: place.center,
+      bbox: place.bbox,
+      polygon: place.polygon,
+      state: PlaceDownloadState.downloaded,
+      regionId: regionId,
+    );
+    await _saveMbtilesRegion(stored, destPath);
   }
 
   /// Imports a local `.mbtiles` file: copies it into app storage (the local
