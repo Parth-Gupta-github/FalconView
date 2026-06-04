@@ -96,6 +96,14 @@ flutter:
     - assets/styles/
     - assets/web_map/
     - assets/web_map/vendor/
+    # Offline glyphs (Noto Sans, 0-255 Latin + 2304-2559 Devanagari) and the
+    # Liberty sprite. Bundled so the offline basemap can render text labels
+    # and POI icons without any network. Flutter doesn't recurse into
+    # subdirectories, so each font folder is listed individually.
+    - assets/glyphs/Noto Sans Regular/
+    - assets/glyphs/Noto Sans Bold/
+    - assets/glyphs/Noto Sans Italic/
+    - assets/sprite/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

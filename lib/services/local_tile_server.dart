@@ -1,20 +1,31 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
 import 'mbtiles_tile_source.dart';
 
 /// A tiny localhost HTTP server that streams vector tiles out of the imported
-/// `.mbtiles` files. MapLibre can only read a *URL* tile source, so this is the
-/// bridge that lets it render the basemap from local files with no network.
+/// `.mbtiles` files plus the bundled glyph/sprite assets the offline style
+/// needs for text labels and POI icons. MapLibre can only read URL sources,
+/// so this is the bridge that lets it render the basemap fully offline.
 ///
-/// Serves `GET /tiles/{z}/{x}/{y}.pbf` by checking each registered MBTiles in
-/// turn and returning the first hit (bytes verbatim, with `Content-Encoding:
-/// gzip` when the stored blob is gzipped). Missing tiles return 204 so MapLibre
-/// treats them as empty rather than an error.
+/// Routes:
+///   GET /tiles/{z}/{x}/{y}.pbf       → next-hit MBTiles lookup
+///   GET /fonts/{fontstack}/{range}.pbf → bundled Noto Sans glyph range
+///   GET /sprite/{name}.{json,png}    → bundled Liberty sprite
+///
+/// Tiles missing from every region return 204 (MapLibre treats as empty).
+/// Missing glyphs/sprite return 404 (MapLibre falls back gracefully).
 class LocalTileServer {
   HttpServer? _server;
   final List<MbtilesTileSource> _sources = <MbtilesTileSource>[];
+
+  // Asset bytes are cached after first read so MapLibre's flood of requests
+  // for each glyph range (one per font × one per Unicode block × per zoom)
+  // doesn't keep hitting rootBundle. Glyphs are ~100KB each; total ceiling
+  // for our 6 files + 4 sprite files is well under 1 MB.
+  final Map<String, Uint8List> _assetCache = <String, Uint8List>{};
 
   bool get isRunning => _server != null;
 
@@ -22,6 +33,20 @@ class LocalTileServer {
   String get tileUrlTemplate {
     final int port = _server?.port ?? 0;
     return 'http://127.0.0.1:$port/tiles/{z}/{x}/{y}.pbf';
+  }
+
+  /// URL template for the style's `glyphs` field. Fontstack names with spaces
+  /// (e.g. "Noto Sans Regular") get percent-encoded by MapLibre when it
+  /// substitutes — the handler decodes them before reading from assets.
+  String get glyphsUrlTemplate {
+    final int port = _server?.port ?? 0;
+    return 'http://127.0.0.1:$port/fonts/{fontstack}/{range}.pbf';
+  }
+
+  /// Base URL for the style's `sprite` field (MapLibre appends .json/.png).
+  String get spriteUrlBase {
+    final int port = _server?.port ?? 0;
+    return 'http://127.0.0.1:$port/sprite/liberty';
   }
 
   Future<int> start() async {
@@ -55,32 +80,27 @@ class LocalTileServer {
   Future<void> _handle(HttpRequest req) async {
     final HttpResponse res = req.response;
     try {
+      if (req.method != 'GET') {
+        res.statusCode = HttpStatus.methodNotAllowed;
+        await res.close();
+        return;
+      }
       final List<String> seg = req.uri.pathSegments;
-      // Expect: tiles / z / x / y.pbf
-      if (req.method == 'GET' && seg.length == 4 && seg[0] == 'tiles') {
-        final int? z = int.tryParse(seg[1]);
-        final int? x = int.tryParse(seg[2]);
-        final int? y = int.tryParse(seg[3].split('.').first);
-        if (z != null && x != null && y != null) {
-          for (final MbtilesTileSource src in _sources) {
-            final Uint8List? bytes = await src.rawTile(z, x, y);
-            if (bytes == null || bytes.isEmpty) continue;
-            final bool gz =
-                bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
-            res.statusCode = HttpStatus.ok;
-            res.headers.set(HttpHeaders.contentTypeHeader,
-                'application/x-protobuf');
-            if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
-            res.headers.set('Access-Control-Allow-Origin', '*');
-            res.add(bytes);
-            await res.close();
-            return;
-          }
-          // No region has this tile — empty, not an error.
-          res.statusCode = HttpStatus.noContent;
-          await res.close();
+      if (seg.isEmpty) {
+        res.statusCode = HttpStatus.notFound;
+        await res.close();
+        return;
+      }
+      switch (seg.first) {
+        case 'tiles':
+          await _handleTile(seg, res);
           return;
-        }
+        case 'fonts':
+          await _handleFont(seg, res);
+          return;
+        case 'sprite':
+          await _handleSprite(seg, res);
+          return;
       }
       res.statusCode = HttpStatus.notFound;
       await res.close();
@@ -90,6 +110,107 @@ class LocalTileServer {
         await res.close();
       } catch (_) {}
       debugPrint('LocalTileServer handler error: $e');
+    }
+  }
+
+  Future<void> _handleTile(List<String> seg, HttpResponse res) async {
+    // Expect: tiles / z / x / y.pbf
+    if (seg.length != 4) {
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+    final int? z = int.tryParse(seg[1]);
+    final int? x = int.tryParse(seg[2]);
+    final int? y = int.tryParse(seg[3].split('.').first);
+    if (z == null || x == null || y == null) {
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+    for (final MbtilesTileSource src in _sources) {
+      final Uint8List? bytes = await src.rawTile(z, x, y);
+      if (bytes == null || bytes.isEmpty) continue;
+      final bool gz =
+          bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
+      res.statusCode = HttpStatus.ok;
+      res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
+      if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
+      res.headers.set('Access-Control-Allow-Origin', '*');
+      res.add(bytes);
+      await res.close();
+      return;
+    }
+    // No region has this tile — empty, not an error.
+    res.statusCode = HttpStatus.noContent;
+    await res.close();
+  }
+
+  Future<void> _handleFont(List<String> seg, HttpResponse res) async {
+    // Expect: fonts / {fontstack} / {range}.pbf  (path segments are already
+    // percent-decoded by HttpRequest.uri.pathSegments)
+    if (seg.length != 3) {
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+    final String fontstack = seg[1];
+    final String rangeFile = seg[2];
+    if (!rangeFile.endsWith('.pbf')) {
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+    final String assetPath = 'assets/glyphs/$fontstack/$rangeFile';
+    final Uint8List? bytes = await _loadAsset(assetPath);
+    if (bytes == null) {
+      // Missing range — MapLibre tolerates 404 and skips text in that range.
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+    res.statusCode = HttpStatus.ok;
+    res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
+    res.headers.set('Access-Control-Allow-Origin', '*');
+    res.add(bytes);
+    await res.close();
+  }
+
+  Future<void> _handleSprite(List<String> seg, HttpResponse res) async {
+    // Expect: sprite / liberty.json | liberty.png | liberty@2x.json | etc.
+    if (seg.length != 2) {
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+    final String file = seg[1];
+    final String assetPath = 'assets/sprite/$file';
+    final Uint8List? bytes = await _loadAsset(assetPath);
+    if (bytes == null) {
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+    final String contentType =
+        file.endsWith('.json') ? 'application/json' : 'image/png';
+    res.statusCode = HttpStatus.ok;
+    res.headers.set(HttpHeaders.contentTypeHeader, contentType);
+    res.headers.set('Access-Control-Allow-Origin', '*');
+    res.add(bytes);
+    await res.close();
+  }
+
+  Future<Uint8List?> _loadAsset(String path) async {
+    final Uint8List? cached = _assetCache[path];
+    if (cached != null) return cached;
+    try {
+      final ByteData data = await rootBundle.load(path);
+      final Uint8List bytes = data.buffer.asUint8List(
+        data.offsetInBytes, data.lengthInBytes);
+      _assetCache[path] = bytes;
+      return bytes;
+    } catch (_) {
+      return null;
     }
   }
 

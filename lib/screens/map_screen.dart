@@ -132,7 +132,11 @@ class _MapScreenState extends State<MapScreen> {
       if (!mounted) return;
       final String? next = paths.isEmpty
           ? null
-          : buildOfflineStyle(_tileServer.tileUrlTemplate);
+          : buildOfflineStyle(
+              _tileServer.tileUrlTemplate,
+              glyphsUrlTemplate: _tileServer.glyphsUrlTemplate,
+              spriteUrlBase: _tileServer.spriteUrlBase,
+            );
       if (next != _offlineStyleJson) {
         setState(() => _offlineStyleJson = next);
       }
