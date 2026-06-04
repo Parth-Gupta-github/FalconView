@@ -1718,6 +1718,17 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
           ),
+          // Bottom-left credit. Sits underneath the action panel so it only
+          // peeks out when the panel is collapsed (a thin chevron); the panel
+          // covers it cleanly when expanded.
+          const Positioned(
+            left: 12,
+            bottom: 10,
+            child: SafeArea(
+              top: false,
+              child: _BuiltByFooter(),
+            ),
+          ),
         ],
       ),
     );
@@ -1730,6 +1741,33 @@ class _MapScreenState extends State<MapScreen> {
         const SingleActivator(LogicalKeyboardKey.slash): _openSearch,
       },
       child: Focus(autofocus: true, child: scaffold),
+    );
+  }
+}
+
+/// Tiny credit chip pinned to the map's bottom-left corner. Stays out of
+/// the way of the action panel — when the panel is expanded it covers this;
+/// when collapsed (just the chevron tab), the footer is visible.
+class _BuiltByFooter extends StatelessWidget {
+  const _BuiltByFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: TacticalPalette.panelTranslucent,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: TacticalPalette.divider),
+      ),
+      child: const Text(
+        'Built by Parv Tiwari & Parth Gupta',
+        style: TextStyle(
+          fontSize: 10,
+          color: TacticalPalette.textDim,
+          height: 1.2,
+        ),
+      ),
     );
   }
 }
