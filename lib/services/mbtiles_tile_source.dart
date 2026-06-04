@@ -143,6 +143,21 @@ class MbtilesTileSource {
     return null;
   }
 
+  /// Geographic extent as `[west, south, east, north]` degrees (or null if
+  /// unknown). A maplibre-free wrapper over [bounds] for callers — like the
+  /// local tile server — that only need the raw numbers and shouldn't pull in
+  /// the maplibre types.
+  Future<List<double>?> boundsWsen() async {
+    final LatLngBounds? b = await bounds();
+    if (b == null) return null;
+    return <double>[
+      b.southwest.longitude,
+      b.southwest.latitude,
+      b.northeast.longitude,
+      b.northeast.latitude,
+    ];
+  }
+
   /// Geographic extent — prefers the `bounds` metadata
   /// ("west,south,east,north"), else derives from the tile range at max zoom.
   Future<LatLngBounds?> bounds() async {

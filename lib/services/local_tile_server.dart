@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
 
 import 'mbtiles_tile_source.dart';
 
@@ -21,10 +24,12 @@ import 'mbtiles_tile_source.dart';
 ///   GET /sprite/{name}.{json,png}    → bundled Liberty sprite
 ///
 /// Tile flow: try each registered MBTiles in order; on a miss try the
-/// upstream tile provider (OpenFreeMap) so the basemap covers the whole
-/// world when online while still serving downloaded regions from disk.
-/// Network failure or no internet → 204 (MapLibre renders an empty tile).
-/// Missing glyphs/sprite return 404 (MapLibre falls back gracefully).
+/// persistent disk cache, then the upstream tile provider (OpenFreeMap) so the
+/// basemap covers the whole world when online while still serving downloaded
+/// regions from disk. Upstream successes are written back to the disk cache.
+/// Transient upstream failures are retried in-request and, if still failing,
+/// return 503 so MapLibre re-asks on the next pan (never 204, which would
+/// leave the tile permanently blank). Missing glyphs/sprite return 404.
 class LocalTileServer {
   LocalTileServer({http.Client? upstreamClient, String? upstreamTileJsonUrl})
       : _upstream = upstreamClient ?? http.Client(),
@@ -53,18 +58,45 @@ class LocalTileServer {
     return const Duration(seconds: 10);
   }
 
-  // LRU cap for proxied upstream tiles. ~500 tiles × ~50 KB avg ≈ 25 MB —
-  // enough to cover a few full pan/zoom cycles around any city without
-  // re-fetching, far below what we'd worry about on a desktop process.
-  static const int _upstreamCacheCapacity = 500;
+  // LRU cap for proxied upstream tiles. 5000 × ~50 KB avg ≈ 250 MB — large
+  // enough to hold every tile inside many full pan/zoom cycles around a
+  // major city at z10-14. Disk-backed cache below catches anything that
+  // overflows or survives across app restarts.
+  static const int _upstreamCacheCapacity = 5000;
 
   /// Bundled MBTiles asset path. Lives in the app bundle, extracted to a
   /// writable location on first use because sqflite needs a real file path.
   static const String _bundledMbtilesAsset = 'assets/basemap/world.mbtiles';
 
+  /// Persistent disk cache for proxied upstream tiles. Once a tile is
+  /// successfully fetched from OpenFreeMap it lands here so future sessions
+  /// (and pans MapLibre forgot about) serve it locally without ever hitting
+  /// the network again. MBTiles schema so we can reuse [MbtilesTileSource]
+  /// for reads if needed and inspect the file with standard tooling.
+  static const String _diskCacheFileName = 'upstream_tile_cache.mbtiles';
+  // Soft cap on tile count; we sample-evict the oldest 10% when exceeded so
+  // we don't run a delete on every insert. 20k × 50 KB ≈ 1 GB ceiling.
+  static const int _diskCacheCapacity = 20000;
+
+  // A stored tile is only served if at least this fraction of its area lies
+  // inside the source's real coverage. This is the fix for the "sparse tile
+  // shadows upstream" bug: a source clipped to a small area (e.g. the bundled
+  // Indore extract) still contains single z0–z6 tiles whose footprint spans a
+  // continent but whose *data* is only the clipped sliver. Serving those would
+  // paint one small region and leave the rest of the tile blank, because the
+  // server would never fall through to the complete upstream tile. Requiring
+  // majority coverage routes those giant low-zoom tiles to upstream while
+  // still serving the fine-grained tiles that genuinely sit inside the region.
+  static const double _tileCoverageThreshold = 0.5;
+
   HttpServer? _server;
   final List<MbtilesTileSource> _sources = <MbtilesTileSource>[];
+  // Per-source coverage as [west, south, east, north] degrees, index-aligned
+  // with [_sources]. Null entry → bounds unknown, so the source is queried
+  // ungated (fail-open: better to serve a tile than wrongly withhold one).
+  final List<List<double>?> _sourceBounds = <List<double>?>[];
   MbtilesTileSource? _bundledWorld;
+  List<double>? _bundledWorldBounds;
   Future<MbtilesTileSource?>? _bundledWorldLoading;
   // Remember a failure so we don't retry rootBundle.load() on every tile miss
   // (12 MB asset = expensive to keep re-loading if it's somehow broken).
@@ -91,6 +123,18 @@ class LocalTileServer {
   // doesn't keep hitting rootBundle. Glyphs are ~100KB each; total ceiling
   // for our 6 files + 4 sprite files is well under 1 MB.
   final Map<String, Uint8List> _assetCache = <String, Uint8List>{};
+
+  // Disk-backed persistent cache for proxied upstream tiles. Opened lazily on
+  // the first upstream miss (writable sqlite — the FFI factory is initialised
+  // in main()). Survives eviction from the in-memory LRU and app restarts, so
+  // once an area has been viewed online it renders fully on every later run
+  // without re-hitting the network.
+  Database? _diskCache;
+  Future<Database?>? _diskCacheOpening;
+  bool _diskCacheFailed = false;
+  // Count inserts so we only run the (relatively expensive) row-count + evict
+  // sweep once every N writes instead of on every tile.
+  int _diskWritesSinceEvict = 0;
 
   bool get isRunning => _server != null;
 
@@ -133,9 +177,12 @@ class LocalTileServer {
       await s.close();
     }
     _sources.clear();
+    _sourceBounds.clear();
     for (final String path in paths) {
       try {
-        _sources.add(await MbtilesTileSource.open(path));
+        final MbtilesTileSource src = await MbtilesTileSource.open(path);
+        _sources.add(src);
+        _sourceBounds.add(await src.boundsWsen());
       } catch (e) {
         debugPrint('LocalTileServer: failed to open $path: $e');
       }
@@ -193,35 +240,27 @@ class LocalTileServer {
       await res.close();
       return;
     }
-    for (final MbtilesTileSource src in _sources) {
-      final Uint8List? bytes = await src.rawTile(z, x, y);
+    for (int i = 0; i < _sources.length; i++) {
+      // Skip a source whose stored tile here would be a sparse sliver of the
+      // real tile (see [_tileMostlyWithin]); fall through to the next source
+      // or upstream so MapLibre gets the complete tile.
+      if (!_tileMostlyWithin(_sourceBounds[i], z, x, y)) continue;
+      final Uint8List? bytes = await _sources[i].rawTile(z, x, y);
       if (bytes == null || bytes.isEmpty) continue;
-      final bool gz =
-          bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
-      res.statusCode = HttpStatus.ok;
-      res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
-      if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
-      res.headers.set('Access-Control-Allow-Origin', '*');
-      res.add(bytes);
-      await res.close();
+      await _emitTile(res, bytes);
       return;
     }
 
     // Bundled fallback — a low-zoom MBTiles shipped with the app so wide-area
     // panning works instantly with no network. Sits between user-imported
-    // regions (which take precedence) and the upstream proxy.
+    // regions (which take precedence) and the upstream proxy. Gated the same
+    // way: the bundle is clipped to a small area, so its giant low-zoom tiles
+    // are withheld here and served complete from upstream instead.
     final MbtilesTileSource? bundle = await _ensureBundledWorld();
-    if (bundle != null) {
+    if (bundle != null && _tileMostlyWithin(_bundledWorldBounds, z, x, y)) {
       final Uint8List? bytes = await bundle.rawTile(z, x, y);
       if (bytes != null && bytes.isNotEmpty) {
-        final bool gz =
-            bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
-        res.statusCode = HttpStatus.ok;
-        res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
-        if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
-        res.headers.set('Access-Control-Allow-Origin', '*');
-        res.add(bytes);
-        await res.close();
+        await _emitTile(res, bytes);
         return;
       }
     }
@@ -263,6 +302,54 @@ class LocalTileServer {
     await res.close();
   }
 
+  /// Streams a vector-tile body to MapLibre with the right headers, sniffing
+  /// the gzip magic so we re-advertise the original Content-Encoding rather
+  /// than re-compressing.
+  Future<void> _emitTile(HttpResponse res, Uint8List bytes) async {
+    final bool gz = bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
+    res.statusCode = HttpStatus.ok;
+    res.headers.set(HttpHeaders.contentTypeHeader, 'application/x-protobuf');
+    if (gz) res.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
+    res.headers.set('Access-Control-Allow-Origin', '*');
+    res.add(bytes);
+    await res.close();
+  }
+
+  /// True if at least [_tileCoverageThreshold] of tile `(z,x,y)`'s area lies
+  /// inside [boundsWsen] (`[west, south, east, north]` degrees). Used to decide
+  /// whether a stored MBTiles tile is "complete enough" to serve, or whether we
+  /// should fall through to upstream for the full tile.
+  ///
+  /// Fail-open: unknown bounds (null) → serve. A z3 tile that spans a whole
+  /// continent but only overlaps a 1°-wide extract scores ~0 and is withheld;
+  /// a z12 tile sitting inside a downloaded city scores ~1 and is served.
+  bool _tileMostlyWithin(List<double>? boundsWsen, int z, int x, int y) {
+    if (boundsWsen == null) return true;
+    final double bw = boundsWsen[0];
+    final double bs = boundsWsen[1];
+    final double be = boundsWsen[2];
+    final double bn = boundsWsen[3];
+    final int n = 1 << z;
+    final double tw = x / n * 360.0 - 180.0;
+    final double te = (x + 1) / n * 360.0 - 180.0;
+    final double tn = _tileLatDeg(y, n);
+    final double ts = _tileLatDeg(y + 1, n);
+    final double lonOverlap = math.min(te, be) - math.max(tw, bw);
+    final double latOverlap = math.min(tn, bn) - math.max(ts, bs);
+    if (lonOverlap <= 0 || latOverlap <= 0) return false;
+    final double tileArea = (te - tw) * (tn - ts);
+    if (tileArea <= 0) return true;
+    return (lonOverlap * latOverlap) / tileArea >= _tileCoverageThreshold;
+  }
+
+  /// North edge latitude (degrees) of tile row `y` in a `n = 2^z` grid, via the
+  /// inverse Web Mercator projection.
+  static double _tileLatDeg(int y, int n) {
+    final double m = math.pi * (1 - 2 * y / n);
+    final double sinh = (math.exp(m) - math.exp(-m)) / 2;
+    return math.atan(sinh) * 180.0 / math.pi;
+  }
+
   /// Returns the bundled-world MBTiles handle, lazily extracting the asset
   /// to a writable path on first access (sqflite can only open from a file
   /// path, not from in-memory bytes). Subsequent callers either get the
@@ -282,6 +369,7 @@ class LocalTileServer {
         _bundledWorldFailed = true;
       } else {
         _bundledWorld = result;
+        _bundledWorldBounds = await result.boundsWsen();
       }
       return result;
     } finally {
@@ -326,7 +414,7 @@ class LocalTileServer {
     final Future<_UpstreamFetch>? inFlight = _upstreamInflight[key];
     if (inFlight != null) return inFlight;
 
-    final Future<_UpstreamFetch> work = _doFetchUpstreamTile(z, x, y);
+    final Future<_UpstreamFetch> work = _fetchFromDiskOrNetwork(z, x, y);
     _upstreamInflight[key] = work;
     try {
       final _UpstreamFetch result = await work;
@@ -343,6 +431,23 @@ class LocalTileServer {
     }
   }
 
+  /// Disk cache sits between the in-memory LRU and the network: a tile fetched
+  /// in any prior session (or one evicted from the small in-memory cache) is
+  /// served straight from sqlite with no network round-trip. Network successes
+  /// are written back so the area renders fully and instantly next time.
+  Future<_UpstreamFetch> _fetchFromDiskOrNetwork(int z, int x, int y) async {
+    final Uint8List? disk = await _diskCacheGet(z, x, y);
+    if (disk != null && disk.isNotEmpty) {
+      return _UpstreamFetch.ok(disk);
+    }
+    final _UpstreamFetch fetched = await _doFetchUpstreamTile(z, x, y);
+    final Uint8List? bytes = fetched.bytes;
+    if (bytes != null && bytes.isNotEmpty) {
+      unawaited(_diskCachePut(z, x, y, bytes));
+    }
+    return fetched;
+  }
+
   Future<_UpstreamFetch> _doFetchUpstreamTile(int z, int x, int y) async {
     final String? template = await _resolveUpstreamTileUrl();
     if (template == null) {
@@ -354,26 +459,156 @@ class LocalTileServer {
         .replaceAll('{z}', '$z')
         .replaceAll('{x}', '$x')
         .replaceAll('{y}', '$y');
-    try {
-      final http.Response r = await _upstream
-          .get(Uri.parse(url), headers: <String, String>{
-            'User-Agent': _upstreamUserAgent,
-          })
-          .timeout(_tileTimeoutForZoom(z));
-      if (r.statusCode == 200) {
-        return _UpstreamFetch.ok(r.bodyBytes);
+    // Retry transient failures (timeout / 5xx / network blip) inside the
+    // request rather than surfacing a 503. A 503 makes MapLibre mark the tile
+    // errored and leave it BLANK until the user happens to pan it back into
+    // view — that's the half-loaded map. Retrying here means a momentary
+    // hiccup self-heals into a 200 the user never sees as a gap. Few, small
+    // high-zoom tiles can afford 3 tries; the big low-zoom tiles get 2 so a
+    // genuinely dead link doesn't stall the whole viewport for minutes.
+    final int maxAttempts = z >= 10 ? 3 : 2;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        final http.Response r = await _upstream
+            .get(Uri.parse(url), headers: <String, String>{
+              'User-Agent': _upstreamUserAgent,
+            })
+            .timeout(_tileTimeoutForZoom(z));
+        if (r.statusCode == 200) {
+          return _UpstreamFetch.ok(r.bodyBytes);
+        }
+        // 4xx from upstream → genuinely no tile here (out-of-range zoom,
+        // ocean tile, etc.). Tell MapLibre to stop asking (204 path). No
+        // point retrying — it'll stay 4xx.
+        if (r.statusCode >= 400 && r.statusCode < 500) {
+          return const _UpstreamFetch.notFound();
+        }
+        // 5xx or anything else unexpected → fall through to retry.
+      } catch (_) {
+        // Network error, timeout, DNS failure — fall through to retry.
       }
-      // 4xx from upstream → genuinely no tile here (out-of-range zoom,
-      // ocean tile, etc.). Tell MapLibre to stop asking (204 path).
-      if (r.statusCode >= 400 && r.statusCode < 500) {
-        return const _UpstreamFetch.notFound();
+      if (attempt < maxAttempts) {
+        // Linear backoff (300ms, 600ms…) — long enough to ride out a blip,
+        // short enough that the tile still fills promptly.
+        await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
       }
-      // 5xx or anything else unexpected → transient, retry on next pan.
-      return const _UpstreamFetch.transient();
-    } catch (_) {
-      // Network error, timeout, DNS failure — all transient.
-      return const _UpstreamFetch.transient();
     }
+    // Exhausted retries → transient, so MapLibre re-requests on the next pan
+    // as a last resort (and the disk cache means a later success sticks).
+    return const _UpstreamFetch.transient();
+  }
+
+  // ---------------- Disk-backed tile cache ----------------
+
+  /// Returns the writable sqlite cache handle, opening it (and creating the
+  /// `tiles` table) on first use. Single in-flight open shared by concurrent
+  /// callers; on failure marks itself failed so we don't retry the open on
+  /// every tile miss.
+  Future<Database?> _ensureDiskCache() async {
+    if (_diskCache != null) return _diskCache;
+    if (_diskCacheFailed) return null;
+    final Future<Database?>? inFlight = _diskCacheOpening;
+    if (inFlight != null) return inFlight;
+    final Future<Database?> work = _openDiskCache();
+    _diskCacheOpening = work;
+    try {
+      final Database? db = await work;
+      if (db == null) {
+        _diskCacheFailed = true;
+      } else {
+        _diskCache = db;
+      }
+      return db;
+    } finally {
+      _diskCacheOpening = null;
+    }
+  }
+
+  Future<Database?> _openDiskCache() async {
+    try {
+      final Directory docs = await getApplicationDocumentsDirectory();
+      final String path = p.join(docs.path, _diskCacheFileName);
+      final Database db = await openDatabase(path);
+      // Stored in plain XYZ (not TMS) since this is our own cache. fetched_at
+      // is an insertion counter used purely for LRU-ish eviction ordering.
+      await db.execute(
+        'CREATE TABLE IF NOT EXISTS tiles ('
+        'zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, '
+        'tile_data BLOB, fetched_at INTEGER, '
+        'PRIMARY KEY (zoom_level, tile_column, tile_row))',
+      );
+      debugPrint('LocalTileServer: disk tile cache ready → $path');
+      return db;
+    } catch (e) {
+      debugPrint('LocalTileServer: disk cache unavailable: $e');
+      return null;
+    }
+  }
+
+  Future<Uint8List?> _diskCacheGet(int z, int x, int y) async {
+    final Database? db = await _ensureDiskCache();
+    if (db == null) return null;
+    try {
+      final List<Map<String, Object?>> rows = await db.query(
+        'tiles',
+        columns: <String>['tile_data'],
+        where: 'zoom_level = ? AND tile_column = ? AND tile_row = ?',
+        whereArgs: <Object?>[z, x, y],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      final Object? data = rows.first['tile_data'];
+      if (data is Uint8List) return data;
+      if (data is List<int>) return Uint8List.fromList(data);
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _diskCachePut(int z, int x, int y, Uint8List bytes) async {
+    final Database? db = await _ensureDiskCache();
+    if (db == null) return;
+    try {
+      await db.insert(
+        'tiles',
+        <String, Object?>{
+          'zoom_level': z,
+          'tile_column': x,
+          'tile_row': y,
+          'tile_data': bytes,
+          'fetched_at': DateTime.now().millisecondsSinceEpoch,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      if (++_diskWritesSinceEvict >= 500) {
+        _diskWritesSinceEvict = 0;
+        unawaited(_evictDiskCacheIfNeeded(db));
+      }
+    } catch (_) {
+      // A write failure just means this tile isn't persisted — it's still
+      // served from the in-memory cache this session.
+    }
+  }
+
+  /// Trims the oldest tiles when the cache grows past its soft cap. Sweeps the
+  /// excess plus another 10% so we don't run a delete on every insert once the
+  /// ceiling is reached.
+  Future<void> _evictDiskCacheIfNeeded(Database db) async {
+    try {
+      final List<Map<String, Object?>> r =
+          await db.rawQuery('SELECT COUNT(*) AS c FROM tiles');
+      final Object? c = r.isEmpty ? null : r.first['c'];
+      final int count = c is num ? c.toInt() : 0;
+      if (count <= _diskCacheCapacity) return;
+      final int toDelete =
+          (count - _diskCacheCapacity) + (_diskCacheCapacity * 0.1).round();
+      await db.rawDelete(
+        'DELETE FROM tiles WHERE rowid IN '
+        '(SELECT rowid FROM tiles ORDER BY fetched_at ASC LIMIT ?)',
+        <Object?>[toDelete],
+      );
+    } catch (_) {}
   }
 
   /// Resolves the upstream `{z}/{x}/{y}` template from the TileJSON pointer.
@@ -500,14 +735,22 @@ class LocalTileServer {
       await s.close();
     }
     _sources.clear();
+    _sourceBounds.clear();
     if (_bundledWorld != null) {
       try {
         await _bundledWorld!.close();
       } catch (_) {}
       _bundledWorld = null;
+      _bundledWorldBounds = null;
     }
     _upstreamCache.clear();
     _upstreamInflight.clear();
+    if (_diskCache != null) {
+      try {
+        await _diskCache!.close();
+      } catch (_) {}
+      _diskCache = null;
+    }
     _upstream.close();
   }
 }
