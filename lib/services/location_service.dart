@@ -27,9 +27,26 @@ class LocationService {
 
   Future<Position> currentPosition() async {
     await _ensurePermission();
-    return Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-    );
+    try {
+      // A live fix. Time-boxed so it can't hang: on desktop (no GPS chip) the
+      // OS resolves location from Wi-Fi/network, which never returns offline.
+      return await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 8),
+        ),
+      );
+    } catch (_) {
+      // Offline / no GPS hardware (e.g. macOS): fall back to the OS's
+      // last-known position, cached from the last successful fix. Lets offline
+      // TRACK/recenter still work from your most recent location.
+      final Position? last = await Geolocator.getLastKnownPosition();
+      if (last != null) return last;
+      throw LocationDenied(
+        'Could not determine your location. Offline location needs a recent '
+        'fix — connect once to set it, then try again.',
+      );
+    }
   }
 
   Future<Stream<Position>> positionStream({int distanceFilterMeters = 5}) async {

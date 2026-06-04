@@ -1204,38 +1204,47 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _startTrackMode() async {
+    // Location fallback chain so TRACK can start offline (esp. macOS, which has
+    // no GPS chip): fresh fix → (LocationService already tries OS last-known) →
+    // the app's last tracked position (_currentGps).
+    LatLng? here;
+    String? errMsg;
     try {
       final Position pos = await _locationService.currentPosition();
-      if (!mounted) return;
-      final LatLng here = LatLng(pos.latitude, pos.longitude);
-      _trackFrom = here;
-      if (_webController != null) {
-        await _webController!
-            .setMarker('track-a', here.latitude, here.longitude, kind: 'track-a');
-        if (!mounted) return;
-        _setStatusMessage('Tap destination on the map');
-        return;
-      }
-      final MapLibreMapController? c = _controller;
-      if (c == null) return;
-      _trackFromCircle = await c.addCircle(CircleOptions(
-        geometry: here,
-        circleRadius: 7,
-        circleColor: '#2563EB',
-        circleStrokeColor: '#FFFFFF',
-        circleStrokeWidth: 2,
-      ));
+      here = LatLng(pos.latitude, pos.longitude);
+    } on LocationDenied catch (e) {
+      here = _currentGps;
+      errMsg = e.message;
+    } catch (e) {
+      here = _currentGps;
+      errMsg = 'Could not get location: $e';
+    }
+    if (!mounted) return;
+    if (here == null) {
+      _showTopToast(errMsg ?? 'Could not determine your location.', error: true);
+      setState(() => _mode = MapMode.none);
+      return;
+    }
+
+    _trackFrom = here;
+    if (_webController != null) {
+      await _webController!
+          .setMarker('track-a', here.latitude, here.longitude, kind: 'track-a');
       if (!mounted) return;
       _setStatusMessage('Tap destination on the map');
-    } on LocationDenied catch (e) {
-      if (!mounted) return;
-      _showTopToast(e.message, error: true);
-      setState(() => _mode = MapMode.none);
-    } catch (e) {
-      if (!mounted) return;
-      _showTopToast('Could not get location: $e', error: true);
-      setState(() => _mode = MapMode.none);
+      return;
     }
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    _trackFromCircle = await c.addCircle(CircleOptions(
+      geometry: here,
+      circleRadius: 7,
+      circleColor: '#2563EB',
+      circleStrokeColor: '#FFFFFF',
+      circleStrokeWidth: 2,
+    ));
+    if (!mounted) return;
+    _setStatusMessage('Tap destination on the map');
   }
 
   Future<void> _setTrackDestination(LatLng dest) async {
