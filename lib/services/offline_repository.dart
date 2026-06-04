@@ -72,6 +72,16 @@ class OfflineRepository {
     if (kIsWeb) {
       throw OfflineNotAvailable('Offline downloads are not supported on web.');
     }
+    // The online region downloader is maplibre_gl's downloadOfflineRegion,
+    // which has no desktop (macOS/Windows/Linux) implementation — calling it
+    // there throws MissingPluginException. Degrade gracefully with a clear
+    // message instead. Importing a prebuilt .mbtiles still works on desktop.
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      throw OfflineNotAvailable(
+        'Offline region download isn\'t available on desktop yet. '
+        'Import an .mbtiles file instead for offline maps.',
+      );
+    }
     if (subscriptionService.tier != AppTier.pro) {
       throw OfflineNotAvailable(
         'Offline download is a Pro feature. Upgrade in Plans to enable it.',

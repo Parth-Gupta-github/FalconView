@@ -1584,9 +1584,9 @@ class _MapScreenState extends State<MapScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Cap the search bar on web so it doesn't stretch across a
-                  // 1920 px monitor. On mobile this is a no-op.
-                  kIsWeb
+                  // Cap the search bar on web AND desktop (macOS/Windows/Linux)
+                  // so it doesn't stretch across a wide monitor. No-op on mobile.
+                  (kIsWeb || _isDesktopMap)
                       ? Align(
                           alignment: Alignment.centerLeft,
                           child: ConstrainedBox(
