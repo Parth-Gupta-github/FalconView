@@ -28,6 +28,8 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSLocationUsageDescription</key>
+	<string>FalconView needs access to your location to show your position on the map.</string>
 	<!-- The in-app LocalTileServer serves vector tiles over http://127.0.0.1
 	     for offline (imported-MBTiles) rendering. macOS blocks cleartext HTTP
 	     by default; NSAllowsLocalNetworking permits loopback/local-network HTTP

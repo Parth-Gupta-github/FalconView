@@ -11,5 +11,7 @@
 	<!-- Needed for the webview to fetch map tiles over the network in debug. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
 </dict>
 </plist>
