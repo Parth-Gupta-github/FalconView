@@ -4,7 +4,6 @@ import 'dart:math' show Point;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
@@ -72,12 +71,6 @@ class _MapScreenState extends State<MapScreen> {
   // MARK markers on the web map are keyed by a running id (no native handles).
   int _webMarkSeq = 0;
 
-  // Desktop online/offline parity: when online we render the full OpenFreeMap
-  // style (all POIs); when offline we fall back to the downloaded offline
-  // tiles. Mirrors how the native SDK blends cache + network on mobile.
-  bool _isOnline = true;
-  StreamSubscription<List<ConnectivityResult>>? _connSub;
-
   final LocationService _locationService = LocationService();
 
   LatLng _mapCenter = _kInitialCenter;
@@ -98,6 +91,7 @@ class _MapScreenState extends State<MapScreen> {
   // with no network. Null when no region has been imported yet.
   final LocalTileServer _tileServer = LocalTileServer();
   String? _offlineStyleJson;
+  List<String> _activeMbtilesPaths = const <String>[];
 
   // When true, the map ignores rotate + tilt gestures and is kept snapped to
   // north-up flat. Persisted so the choice survives an app restart. Useful
@@ -116,60 +110,47 @@ class _MapScreenState extends State<MapScreen> {
     _loadSatelliteBasemap();
     _loadRenderStyle();
     _initOfflineMap();
-    _watchConnectivity();
     subscriptionService.addListener(_onTierChanged);
-  }
-
-  /// Desktop only: track connectivity so the basemap can switch between the
-  /// full online style (all POIs) and the offline downloaded tiles, matching
-  /// the native SDK's online/offline behaviour on mobile.
-  void _watchConnectivity() {
-    if (kIsWeb || !_isDesktopMap) return;
-    bool isUp(List<ConnectivityResult> r) =>
-        r.any((ConnectivityResult c) => c != ConnectivityResult.none);
-    Connectivity().checkConnectivity().then((List<ConnectivityResult> r) {
-      if (mounted && isUp(r) != _isOnline) setState(() => _isOnline = isUp(r));
-    });
-    _connSub = Connectivity().onConnectivityChanged.listen(
-      (List<ConnectivityResult> r) {
-        if (mounted && isUp(r) != _isOnline) setState(() => _isOnline = isUp(r));
-      },
-    );
   }
 
   /// Starts the local tile server and, if any MBTiles regions are imported,
   /// switches the basemap to render from them (offline). Safe to call again
-  /// after an import to pick up newly added regions.
+  /// after an import or desktop region download — it diffs the registered
+  /// paths against the active set and only reopens sources when something
+  /// actually changed, so it can be hooked into every navigator-pop without
+  /// flickering the basemap.
   Future<void> _initOfflineMap() async {
     if (kIsWeb) return;
     try {
       await _tileServer.start();
       final List<String> paths = await _offline.registeredMbtilesPaths();
-      await _tileServer.setSources(paths);
-      String? offlineStyle;
-      if (paths.isNotEmpty) {
-        final String tpl = _tileServer.tileUrlTemplate;
-        // Prefer the FULL online style (all layers, labels, POIs) reading from
-        // local tiles, so offline looks identical to online. Fall back to the
-        // stripped geometry style only if the rich style isn't available yet.
-        String? full = _renderStyleJson;
-        if (full == null) {
-          try {
-            full = await TileConfig.forTier(subscriptionService.tier)
-                .loadRenderStyle();
-          } catch (_) {
-            full = null;
-          }
-        }
-        offlineStyle = full != null
-            ? buildOfflineStyleFromOnline(full, tpl)
-            : buildOfflineStyle(tpl);
+      final bool changed = !_sameList(paths, _activeMbtilesPaths);
+      if (changed) {
+        await _tileServer.setSources(paths);
+        _activeMbtilesPaths = List<String>.unmodifiable(paths);
       }
       if (!mounted) return;
-      setState(() => _offlineStyleJson = offlineStyle);
+      final String? next = paths.isEmpty
+          ? null
+          : buildOfflineStyle(
+              _tileServer.tileUrlTemplate,
+              glyphsUrlTemplate: _tileServer.glyphsUrlTemplate,
+              spriteUrlBase: _tileServer.spriteUrlBase,
+            );
+      if (next != _offlineStyleJson) {
+        setState(() => _offlineStyleJson = next);
+      }
     } catch (e) {
       debugPrint('Offline map init failed: $e');
     }
+  }
+
+  bool _sameList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   Future<void> _loadRenderStyle() async {
@@ -420,7 +401,7 @@ class _MapScreenState extends State<MapScreen> {
   Circle? _trackFromCircle;
   Circle? _trackToCircle;
   final RoutingService _routing = RoutingService();
-  final OfflineRepository _offline = offlineRepository;
+  final OfflineRepository _offline = OfflineRepository();
   int _routingSeq = 0;
 
   Circle? _gpsHalo;
@@ -511,8 +492,6 @@ class _MapScreenState extends State<MapScreen> {
     _zoomTimer?.cancel();
     _gpsSub?.cancel();
     _gpsSub = null;
-    _connSub?.cancel();
-    _connSub = null;
     _controller?.removeListener(_onControllerChanged);
     _controller?.onSymbolTapped.remove(_onSymbolTapped);
     subscriptionService.removeListener(_onTierChanged);
@@ -612,10 +591,10 @@ class _MapScreenState extends State<MapScreen> {
     final Place? result = await Navigator.of(context).push<Place>(
       MaterialPageRoute(builder: (_) => const SearchScreen()),
     );
-    if (!mounted) return;
-    // The search screen can download/import regions; pick any up so they
-    // render offline (re-pushes the offline style into the webview on desktop).
-    await _initOfflineMap();
+    // The user may have downloaded a region or imported an .mbtiles while in
+    // the search screen — pick up any new files for the basemap. Cheap no-op
+    // when nothing changed.
+    if (mounted) await _initOfflineMap();
     if (result == null || !mounted) return;
     final MapLibreMapController? c = _controller;
     if (_webController != null) {
@@ -1204,9 +1183,9 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _startTrackMode() async {
-    // Location fallback chain so TRACK can start offline (esp. macOS, which has
-    // no GPS chip): fresh fix → (LocationService already tries OS last-known) →
-    // the app's last tracked position (_currentGps).
+    // Location fallback chain so TRACK can start offline (esp. macOS, no GPS
+    // chip): fresh fix → (LocationService tries OS last-known) → app's last
+    // tracked position (_currentGps).
     LatLng? here;
     String? errMsg;
     try {
@@ -1517,10 +1496,6 @@ class _MapScreenState extends State<MapScreen> {
       final String? indexErr = _offline.lastIndexError;
       final IndexBuildStats? stats = _offline.lastIndexStats;
       await _clearAreaOverlay();
-      // Pick up the just-downloaded region: (re)start the tile server with the
-      // new MBTiles and switch the basemap to the offline style so it renders
-      // without network. On desktop this re-pushes the style into the webview.
-      await _initOfflineMap();
       if (!mounted) return;
       setState(() {
         _mode = MapMode.none;
@@ -1534,6 +1509,9 @@ class _MapScreenState extends State<MapScreen> {
             stats == null ? '' : ' · ${stats.poisInserted} POIs';
         _showTopToast('Area downloaded$tail');
       }
+      // Desktop write a new .mbtiles into the registry. Mobile leaves the
+      // registry alone but the call is a cheap no-op.
+      await _initOfflineMap();
     } on OfflineNotAvailable catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1556,14 +1534,8 @@ class _MapScreenState extends State<MapScreen> {
   /// has no binding. Both consume the same style string (online URL or the
   /// offline localhost-tile JSON).
   Widget _buildBasemap(TileConfig cfg) {
+    final String style = _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl;
     if (_isDesktopMap) {
-      // Online → full OpenFreeMap style (all POIs/labels), exactly like the
-      // native map. Offline → the downloaded localhost tiles. This is why the
-      // map no longer degrades to the stripped style after a download while
-      // you still have a connection.
-      final String style = _isOnline
-          ? (_renderStyleJson ?? cfg.styleUrl)
-          : (_offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl);
       return WebMapView(
         styleJson: style,
         onControllerReady: _onWebMapReady,
@@ -1573,9 +1545,6 @@ class _MapScreenState extends State<MapScreen> {
         },
       );
     }
-    // Mobile/web: the native SDK blends its own cache with the network, so the
-    // offline style (when set) takes precedence, then the bundled/online style.
-    final String style = _offlineStyleJson ?? _renderStyleJson ?? cfg.styleUrl;
     return MapLibreMap(
       styleString: style,
       initialCameraPosition: const CameraPosition(
@@ -1708,9 +1677,7 @@ class _MapScreenState extends State<MapScreen> {
           _buildTopRightStack(),
           Positioned(
             right: 16,
-            // Raised so the bottom-most FAB (GPS) clears the action bar, which
-            // grew taller after the build credit moved below it.
-            bottom: 140,
+            bottom: 96,
             child: SafeArea(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1750,40 +1717,25 @@ class _MapScreenState extends State<MapScreen> {
             bottom: 16,
             child: SafeArea(
               top: false,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  KeyedSubtree(
-                    key: _actionPanelKey,
-                    child: ActionPanel(
-                      mode: _mode,
-                      onModeToggled: _onModeToggled,
-                      onClear: _onClear,
-                    ),
-                  ),
-                  // Always-visible build credit, bottom-most left below the panel.
-                  IgnorePointer(
-                    child: Container(
-                      margin: const EdgeInsets.only(top: 8),
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: TacticalPalette.panel.withValues(alpha: 0.82),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: const Text(
-                        'Built by Parv Tiwari & Parth Gupta',
-                        style: TextStyle(
-                          color: TacticalPalette.textDim,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+              child: KeyedSubtree(
+                key: _actionPanelKey,
+                child: ActionPanel(
+                  mode: _mode,
+                  onModeToggled: _onModeToggled,
+                  onClear: _onClear,
+                ),
               ),
+            ),
+          ),
+          // Bottom-left credit. Sits underneath the action panel so it only
+          // peeks out when the panel is collapsed (a thin chevron); the panel
+          // covers it cleanly when expanded.
+          const Positioned(
+            left: 12,
+            bottom: 10,
+            child: SafeArea(
+              top: false,
+              child: _BuiltByFooter(),
             ),
           ),
         ],
@@ -1798,6 +1750,33 @@ class _MapScreenState extends State<MapScreen> {
         const SingleActivator(LogicalKeyboardKey.slash): _openSearch,
       },
       child: Focus(autofocus: true, child: scaffold),
+    );
+  }
+}
+
+/// Tiny credit chip pinned to the map's bottom-left corner. Stays out of
+/// the way of the action panel — when the panel is expanded it covers this;
+/// when collapsed (just the chevron tab), the footer is visible.
+class _BuiltByFooter extends StatelessWidget {
+  const _BuiltByFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: TacticalPalette.panelTranslucent,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: TacticalPalette.divider),
+      ),
+      child: const Text(
+        'Built by Parv Tiwari & Parth Gupta',
+        style: TextStyle(
+          fontSize: 10,
+          color: TacticalPalette.textDim,
+          height: 1.2,
+        ),
+      ),
     );
   }
 }

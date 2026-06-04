@@ -11,7 +11,6 @@ import '../models/app_tier.dart';
 import '../models/place.dart';
 import '../util/polygon_geo.dart';
 import 'mbtiles_tile_source.dart';
-import 'mbtiles_writer.dart';
 import 'offline_router.dart';
 import 'offline_search_index.dart';
 import 'routing_service.dart' show RouteResult;
@@ -78,15 +77,6 @@ class OfflineRepository {
         'Offline download is a Pro feature. Upgrade in Plans to enable it.',
       );
     }
-    final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
-    // Desktop (macOS/Windows/Linux) has no native maplibre offline downloader,
-    // so we fetch the region's tiles into a portable .mbtiles that the
-    // LocalTileServer serves to the webview map. End result is the same as
-    // Android's downloadOfflineRegion: tap download → region works offline.
-    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-      await _downloadToMbtiles(place, cfg, onProgress);
-      return;
-    }
     // Map tiles are square, so we always download the polygon's bounding box.
     // The POI + road-graph extracts below are what get clipped to the drawn
     // area via this predicate (null for plain rectangular regions).
@@ -95,6 +85,18 @@ class OfflineRepository {
         (poly != null && poly.length >= 3)
             ? (double lat, double lon) => PolygonGeo.contains(poly, lat, lon)
             : null;
+
+    // Desktop (macOS/Windows/Linux) has no maplibre_gl Flutter binding for
+    // [downloadOfflineRegion]. Instead we walk the same tile pyramid the
+    // mobile path's index builder already fetches and write each tile to an
+    // .mbtiles bundle, which the local tile server then serves to the
+    // WebView basemap. End result: full offline rendering + search + routing,
+    // built from the same MVT extraction code mobile uses.
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      await _downloadAsMbtiles(place, contains, onProgress);
+      return;
+    }
+    final TileConfig cfg = TileConfig.forTier(subscriptionService.tier);
     final OfflineRegionDefinition definition = OfflineRegionDefinition(
       bounds: place.bbox,
       mapStyleUrl: cfg.styleUrl,
@@ -140,14 +142,13 @@ class OfflineRepository {
     if (onProgress != null) onProgress(100);
   }
 
-  /// Desktop offline download: fetch the region's tiles into a portable
-  /// `.mbtiles`, build the POI index + road graph from it, and register it so
-  /// the LocalTileServer renders it and search/routing work — all offline
-  /// afterwards. The map zoom range is capped at 14 (the offline style's source
-  /// maxzoom; higher levels overzoom z14 and would just waste the download).
-  Future<void> _downloadToMbtiles(
+  /// Desktop region download: fetches tiles for [place.bbox] over HTTP, writes
+  /// them into a fresh `.mbtiles` file, extracts POIs + the road graph from
+  /// the same tile bytes, and registers the file with the imported-MBTiles
+  /// registry so [listDownloaded] and the local tile server pick it up.
+  Future<void> _downloadAsMbtiles(
     Place place,
-    TileConfig cfg,
+    bool Function(double lat, double lon)? contains,
     void Function(double percent)? onProgress,
   ) async {
     _lastIndexError = null;
@@ -157,74 +158,23 @@ class OfflineRepository {
 
     final int regionId = await _nextMbtilesRegionId();
     final String destPath = await _mbtilesPathFor(regionId);
-    final LatLngBounds b = place.bbox;
-    final String bounds = '${b.southwest.longitude},${b.southwest.latitude},'
-        '${b.northeast.longitude},${b.northeast.latitude}';
-    final int zMin = cfg.offlineMinZoom.toInt();
-    final int zMax = cfg.offlineMaxZoom.toInt() < 14 ? cfg.offlineMaxZoom.toInt() : 14;
 
-    final List<LatLng>? poly = place.polygon;
-    final bool Function(double lat, double lon)? contains =
-        (poly != null && poly.length >= 3)
-            ? (double lat, double lon) => PolygonGeo.contains(poly, lat, lon)
-            : null;
-
+    IndexBuildStats stats;
     try {
-      // 1. Fetch tiles → .mbtiles (0–70%).
-      final MbtilesWriter writer = await MbtilesWriter.create(
-        destPath,
-        name: place.name,
-        bounds: bounds,
-        minZoom: zMin,
-        maxZoom: zMax,
+      stats = await _index.build(
+        regionId,
+        place.bbox,
+        contains: contains,
+        mbtilesOutPath: destPath,
+        mbtilesName: place.name,
+        onProgress: onProgress,
       );
-      int tilesWritten = 0;
-      try {
-        tilesWritten = await _index.downloadRegionToMbtiles(
-          writer,
-          b,
-          zMin: zMin,
-          zMax: zMax,
-          onProgress: (double p) => onProgress?.call(p * 0.7),
-        );
-      } finally {
-        await writer.close();
-      }
-      if (tilesWritten == 0) {
-        throw OfflineNotAvailable(
-          'No tiles could be downloaded — check your connection and try again.',
-        );
-      }
-
-      // 2. Build POI index + road graph from the downloaded .mbtiles (70–100%).
-      final MbtilesTileSource source = await MbtilesTileSource.open(destPath);
-      try {
-        final IndexBuildStats stats = await _index.buildFromMbtiles(
-          regionId,
-          source,
-          contains: contains,
-          onProgress: (double p) => onProgress?.call(70 + p * 0.3),
-        );
-        _lastPoiSource = stats.source;
-        _lastIndexStats = stats;
-        await _persistPoiSource(regionId, stats.source);
-      } finally {
-        await source.close();
-      }
-
-      // 3. Register so LocalTileServer + the offline style pick it up.
-      final Place saved = Place(
-        name: place.name,
-        subtitle: 'Offline region · ${_lastIndexStats?.poisInserted ?? 0} POIs',
-        center: place.center,
-        bbox: place.bbox,
-        polygon: place.polygon,
-        state: PlaceDownloadState.downloaded,
-        regionId: regionId,
-      );
-      await _saveMbtilesRegion(saved, destPath);
-      onProgress?.call(100);
-    } catch (e) {
+      _lastPoiSource = stats.source;
+      _lastIndexStats = stats;
+      await _persistPoiSource(regionId, stats.source);
+    } catch (e, stack) {
+      // ignore: avoid_print
+      print('[OfflineSearchIndex.build mbtiles] FAILED: $e\n$stack');
       _lastIndexError = '$e';
       try {
         final File f = File(destPath);
@@ -232,6 +182,45 @@ class OfflineRepository {
       } catch (_) {}
       rethrow;
     }
+
+    // Verify the writer actually produced a usable file before we register it.
+    // We open it as an MBTiles source and confirm at least one tile landed —
+    // catches the "every fetch failed" / "network died" scenarios that would
+    // otherwise leave us with an empty .mbtiles in the registry.
+    final File outFile = File(destPath);
+    bool ok = false;
+    if (await outFile.exists()) {
+      try {
+        final MbtilesTileSource probe = await MbtilesTileSource.open(destPath);
+        try {
+          ok = (await probe.tileCount(0, 24)) > 0;
+        } finally {
+          await probe.close();
+        }
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (!ok) {
+      _lastIndexError = _lastIndexError ?? 'MBTiles output is empty';
+      try {
+        if (await outFile.exists()) await outFile.delete();
+      } catch (_) {}
+      throw OfflineNotAvailable(
+        'Region download failed — no tiles were saved. Check your network.',
+      );
+    }
+
+    final Place stored = Place(
+      name: place.name,
+      subtitle: place.subtitle,
+      center: place.center,
+      bbox: place.bbox,
+      polygon: place.polygon,
+      state: PlaceDownloadState.downloaded,
+      regionId: regionId,
+    );
+    await _saveMbtilesRegion(stored, destPath);
   }
 
   /// Imports a local `.mbtiles` file: copies it into app storage (the local
@@ -438,10 +427,13 @@ class OfflineRepository {
 
   Future<List<Place>> listDownloaded() async {
     if (kIsWeb) return const <Place>[];
-    final List<Place> out = [];
-    // Native maplibre offline regions (Android/iOS). On desktop the plugin has
-    // no implementation, so getListOfRegions throws MissingPluginException —
-    // guard it so the downloaded/imported MBTiles regions below still show.
+    // maplibre_gl's getListOfRegions has no desktop binding — calling it on
+    // Windows/macOS/Linux throws MissingPluginException, which previously
+    // caused the entire Downloaded tab to come back empty even when our own
+    // .mbtiles registry had regions. Treat the throw as "no native regions"
+    // (which is always true on desktop) and let the MBTiles registry below
+    // contribute its rows.
+    final List<Place> out = <Place>[];
     try {
       final List<OfflineRegion> regions = await getListOfRegions();
       for (final OfflineRegion r in regions) {
@@ -451,20 +443,29 @@ class OfflineRepository {
     } catch (e) {
       debugPrint('getListOfRegions unavailable (desktop?): $e');
     }
-    // Imported/downloaded MBTiles regions live in our own registry.
+    // Imported / desktop-downloaded MBTiles regions live in our own registry,
+    // not MapLibre's store.
     out.addAll(await _loadMbtilesRegions());
     return out;
   }
 
   Future<void> delete(int regionId) async {
     if (kIsWeb) return;
-    // Imported MBTiles regions have no MapLibre offline region — drop the
-    // registry entry (which deletes the .mbtiles file) and the index DB.
+    // Imported / desktop-downloaded MBTiles regions have no MapLibre offline
+    // region — drop the registry entry (which deletes the .mbtiles file) and
+    // the index DB.
     if (await _isMbtilesRegion(regionId)) {
       await _removeMbtilesRegion(regionId);
       await _index.deleteIndex(regionId);
     } else {
-      await deleteOfflineRegion(regionId);
+      // Native offline region — only exists on mobile. Wrap defensively so
+      // an attempt on desktop (where deleteOfflineRegion throws
+      // MissingPluginException) still cleans up the local index.
+      try {
+        await deleteOfflineRegion(regionId);
+      } catch (e) {
+        debugPrint('deleteOfflineRegion unavailable (desktop?): $e');
+      }
       await _index.deleteIndex(regionId);
     }
     try {
@@ -569,9 +570,3 @@ class OfflineRepository {
     }
   }
 }
-
-/// App-wide singleton so the map and search screens share ONE repository.
-/// Downloads run on this instance, so navigating between screens no longer
-/// orphans an in-flight download, and the registry/index state stays
-/// consistent across the app.
-final OfflineRepository offlineRepository = OfflineRepository();

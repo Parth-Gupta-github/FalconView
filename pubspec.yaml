@@ -49,7 +49,6 @@ dependencies:
   file_picker: ^8.1.2
   flutter_plugin_android_lifecycle: 2.0.24
   flutter_inappwebview: ^6.1.5
-  connectivity_plus: ^7.1.1
 
 
 dev_dependencies:
@@ -81,9 +80,6 @@ flutter_launcher_icons:
     generate: true
     image_path: "assets/icon/icon.png"
     icon_size: 256
-  macos:
-    generate: true
-    image_path: "assets/icon/icon.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -100,6 +96,19 @@ flutter:
     - assets/styles/
     - assets/web_map/
     - assets/web_map/vendor/
+    # Offline glyphs (Noto Sans, 0-255 Latin + 2304-2559 Devanagari) and the
+    # Liberty sprite. Bundled so the offline basemap can render text labels
+    # and POI icons without any network. Flutter doesn't recurse into
+    # subdirectories, so each font folder is listed individually.
+    - assets/glyphs/Noto Sans Regular/
+    - assets/glyphs/Noto Sans Bold/
+    - assets/glyphs/Noto Sans Italic/
+    - assets/sprite/
+    # Low-zoom basemap shipped with the app. LocalTileServer extracts it to
+    # a writable path on first use and serves tiles from it after any
+    # imported/downloaded region misses but before the upstream proxy — so
+    # wide-area panning works instantly even on slow networks.
+    - assets/basemap/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

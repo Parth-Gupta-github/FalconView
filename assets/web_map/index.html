@@ -34,11 +34,17 @@
     .fv-dot.track-b  { background: #00C853; }
     .fv-dot.ruler    { width: 12px; height: 12px; background: #FF1744; box-shadow: none; }
     .fv-dot.area     { width: 10px; height: 10px; background: #1565C0; box-shadow: none; }
-    /* A teardrop pin for MARK. */
+    /* MARK pin. Matches the web/mobile path which renders Flutter's
+       Icons.location_on (Material Design teardrop) at red #E53935. We bake
+       the same SVG inline so the desktop WebView, the Flutter Web canvas,
+       and the native mobile symbol layer all show an identical marker. */
     .fv-pin {
-      width: 22px; height: 22px; background: #E53935;
-      border: 2px solid #fff; border-radius: 50% 50% 50% 0;
-      transform: rotate(-45deg); box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+      width: 30px; height: 30px;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23E53935'><path d='M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z'/></svg>");
+      background-size: contain;
+      background-repeat: no-repeat;
+      background-position: center;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45));
     }
   </style>
 </head>
@@ -55,6 +61,80 @@
         window.flutter_inappwebview.callHandler('fvEvent', payload);
       }
     }
+
+    // --- global error capture ------------------------------------------------
+    // Without these, MapLibre internals can call `console.error(new Error())`
+    // and Dart only sees the stringified "Error" with no message, source or
+    // stack. Capture everything we can and emit a structured payload so the
+    // Dart side can log a useful diagnostic.
+    function describe(err) {
+      if (err == null) return { message: 'null' };
+      if (err instanceof Error) {
+        return { message: err.message || err.name || 'Error',
+                 name: err.name || 'Error',
+                 stack: err.stack || '' };
+      }
+      if (typeof err === 'string') return { message: err };
+      try { return { message: JSON.stringify(err) }; }
+      catch (_) { return { message: String(err) }; }
+    }
+    window.addEventListener('error', function (e) {
+      var d = describe(e.error || e.message);
+      emit('error', { message: d.message, stack: d.stack || '',
+                      source: e.filename || '', line: e.lineno || 0,
+                      col: e.colno || 0, cmd: 'window.onerror' });
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      var d = describe(e.reason);
+      emit('error', { message: d.message, stack: d.stack || '',
+                      cmd: 'unhandledrejection' });
+    });
+    // Wrap console.error so MapLibre's internal error logs come through with
+    // full args, not just an empty `"Error"` string.
+    //
+    // We intentionally suppress "Failed to fetch" / AbortError messages here:
+    // MapLibre uses AbortController to cancel in-flight tile requests on
+    // every pan/zoom, and each cancellation triggers a fetch rejection that
+    // MapLibre logs via console.error. They're normal and non-actionable —
+    // a single pan can produce 30+ of them. The original error still flows
+    // through to the real console.error so devtools sees it for debugging.
+    function isFetchAbortNoise(message) {
+      if (typeof message !== 'string') return false;
+      return message === 'Failed to fetch' ||
+             message.indexOf('Failed to fetch') >= 0 ||
+             message.indexOf('AbortError') >= 0 ||
+             message.indexOf('The operation was aborted') >= 0;
+    }
+    (function () {
+      var orig = console.error.bind(console);
+      console.error = function () {
+        try {
+          var parts = [];
+          var anyRealError = false;
+          for (var i = 0; i < arguments.length; i++) {
+            var a = arguments[i];
+            if (a instanceof Error) {
+              var em = a.message || a.name || 'Error';
+              if (isFetchAbortNoise(em)) continue;
+              parts.push(em + (a.stack ? '\n' + a.stack : ''));
+              anyRealError = true;
+            } else if (typeof a === 'string') {
+              if (isFetchAbortNoise(a)) continue;
+              parts.push(a);
+              anyRealError = true;
+            } else {
+              try { parts.push(JSON.stringify(a)); }
+              catch (_) { parts.push(String(a)); }
+              anyRealError = true;
+            }
+          }
+          if (anyRealError && parts.length > 0) {
+            emit('error', { message: parts.join(' | '), cmd: 'console.error' });
+          }
+        } catch (_) {}
+        return orig.apply(console, arguments);
+      };
+    })();
 
     var map = null;
     var markers = {};   // id -> maplibre.Marker

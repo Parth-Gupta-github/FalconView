@@ -28,7 +28,7 @@ class LocationService {
   Future<Position> currentPosition() async {
     await _ensurePermission();
     try {
-      // A live fix. Time-boxed so it can't hang: on desktop (no GPS chip) the
+      // A live fix, time-boxed so it can't hang: on desktop (no GPS chip) the
       // OS resolves location from Wi-Fi/network, which never returns offline.
       return await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
@@ -38,8 +38,7 @@ class LocationService {
       );
     } catch (_) {
       // Offline / no GPS hardware (e.g. macOS): fall back to the OS's
-      // last-known position, cached from the last successful fix. Lets offline
-      // TRACK/recenter still work from your most recent location.
+      // last-known position so offline TRACK/recenter still work.
       final Position? last = await Geolocator.getLastKnownPosition();
       if (last != null) return last;
       throw LocationDenied(
