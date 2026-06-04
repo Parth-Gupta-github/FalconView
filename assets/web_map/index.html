@@ -91,24 +91,46 @@
     });
     // Wrap console.error so MapLibre's internal error logs come through with
     // full args, not just an empty `"Error"` string.
+    //
+    // We intentionally suppress "Failed to fetch" / AbortError messages here:
+    // MapLibre uses AbortController to cancel in-flight tile requests on
+    // every pan/zoom, and each cancellation triggers a fetch rejection that
+    // MapLibre logs via console.error. They're normal and non-actionable —
+    // a single pan can produce 30+ of them. The original error still flows
+    // through to the real console.error so devtools sees it for debugging.
+    function isFetchAbortNoise(message) {
+      if (typeof message !== 'string') return false;
+      return message === 'Failed to fetch' ||
+             message.indexOf('Failed to fetch') >= 0 ||
+             message.indexOf('AbortError') >= 0 ||
+             message.indexOf('The operation was aborted') >= 0;
+    }
     (function () {
       var orig = console.error.bind(console);
       console.error = function () {
         try {
           var parts = [];
+          var anyRealError = false;
           for (var i = 0; i < arguments.length; i++) {
             var a = arguments[i];
             if (a instanceof Error) {
-              parts.push((a.message || a.name || 'Error') +
-                         (a.stack ? '\n' + a.stack : ''));
+              var em = a.message || a.name || 'Error';
+              if (isFetchAbortNoise(em)) continue;
+              parts.push(em + (a.stack ? '\n' + a.stack : ''));
+              anyRealError = true;
             } else if (typeof a === 'string') {
+              if (isFetchAbortNoise(a)) continue;
               parts.push(a);
+              anyRealError = true;
             } else {
               try { parts.push(JSON.stringify(a)); }
               catch (_) { parts.push(String(a)); }
+              anyRealError = true;
             }
           }
-          emit('error', { message: parts.join(' | '), cmd: 'console.error' });
+          if (anyRealError && parts.length > 0) {
+            emit('error', { message: parts.join(' | '), cmd: 'console.error' });
+          }
         } catch (_) {}
         return orig.apply(console, arguments);
       };

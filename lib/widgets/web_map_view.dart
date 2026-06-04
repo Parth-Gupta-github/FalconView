@@ -133,9 +133,21 @@ class _WebMapViewState extends State<WebMapView> {
         );
       },
       onConsoleMessage: (_, ConsoleMessage msg) {
-        if (msg.messageLevel == ConsoleMessageLevel.ERROR) {
-          debugPrint('WebMapView console: ${msg.message}');
+        if (msg.messageLevel != ConsoleMessageLevel.ERROR) return;
+        final String m = msg.message.trim();
+        // Skip noise:
+        //  - bare `"Error"` strings are redundant — the JS-side wrapper in
+        //    index.html already emits real Error instances through the
+        //    fvEvent channel with message + stack.
+        //  - `Failed to fetch` is MapLibre's pan-cancellation behaviour
+        //    (AbortController on viewport change). Not actionable.
+        if (m == 'Error' ||
+            m == '"Error"' ||
+            m.contains('Failed to fetch') ||
+            m.contains('AbortError')) {
+          return;
         }
+        debugPrint('WebMapView console: $m');
       },
     );
   }
