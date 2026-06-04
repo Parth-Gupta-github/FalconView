@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -22,16 +23,16 @@ import 'mbtiles_tile_source.dart';
 /// Network failure or no internet → 204 (MapLibre renders an empty tile).
 /// Missing glyphs/sprite return 404 (MapLibre falls back gracefully).
 class LocalTileServer {
-  LocalTileServer({http.Client? upstreamClient, String? upstreamTileUrlTemplate})
+  LocalTileServer({http.Client? upstreamClient, String? upstreamTileJsonUrl})
       : _upstream = upstreamClient ?? http.Client(),
-        _upstreamTileUrlTemplate =
-            upstreamTileUrlTemplate ?? _defaultUpstreamTileUrl;
+        _upstreamTileJsonUrl = upstreamTileJsonUrl ?? _defaultTileJsonUrl;
 
-  // OpenFreeMap planet vector tiles — matches what OfflineSearchIndex
-  // resolves at runtime from style.json. Hardcoded here to keep this
-  // module standalone; if OpenFreeMap ever changes paths, update this.
-  static const String _defaultUpstreamTileUrl =
-      'https://tiles.openfreemap.org/planet/{z}/{x}/{y}.pbf';
+  // OpenFreeMap publishes a TileJSON pointer at this URL; the document inside
+  // contains the real `{z}/{x}/{y}.pbf` template, which embeds a dated planet
+  // snapshot like `.../planet/20240611_001001_pt/...`. Resolve lazily on the
+  // first cache miss so a bad network at startup doesn't break boot.
+  static const String _defaultTileJsonUrl =
+      'https://tiles.openfreemap.org/planet';
   static const String _upstreamUserAgent =
       'FalconView/1.0 (local tile proxy; contact: tarun@igismap.com)';
   static const Duration _upstreamTimeout = Duration(seconds: 10);
@@ -39,7 +40,9 @@ class LocalTileServer {
   HttpServer? _server;
   final List<MbtilesTileSource> _sources = <MbtilesTileSource>[];
   final http.Client _upstream;
-  final String _upstreamTileUrlTemplate;
+  final String _upstreamTileJsonUrl;
+  String? _resolvedUpstreamTileUrl;
+  Future<String?>? _resolvingUpstream;
 
   // Asset bytes are cached after first read so MapLibre's flood of requests
   // for each glyph range (one per font × one per Unicode block × per zoom)
@@ -186,7 +189,9 @@ class LocalTileServer {
   }
 
   Future<Uint8List?> _fetchUpstreamTile(int z, int x, int y) async {
-    final String url = _upstreamTileUrlTemplate
+    final String? template = await _resolveUpstreamTileUrl();
+    if (template == null) return null;
+    final String url = template
         .replaceAll('{z}', '$z')
         .replaceAll('{x}', '$x')
         .replaceAll('{y}', '$y');
@@ -199,6 +204,55 @@ class LocalTileServer {
       if (r.statusCode != 200) return null;
       return r.bodyBytes;
     } catch (_) {
+      return null;
+    }
+  }
+
+  /// Resolves the upstream `{z}/{x}/{y}` template from the TileJSON pointer.
+  /// OpenFreeMap embeds a dated planet snapshot (e.g. `.../planet/20240611_..`)
+  /// inside the TileJSON's `tiles[0]` field, so we can't hardcode the path.
+  /// Single in-flight resolution shared by all concurrent callers; cached
+  /// permanently on success, null-returned-but-not-cached on failure so the
+  /// next tile request retries (handles "started offline → went online").
+  Future<String?> _resolveUpstreamTileUrl() async {
+    final String? cached = _resolvedUpstreamTileUrl;
+    if (cached != null) return cached;
+    final Future<String?>? inFlight = _resolvingUpstream;
+    if (inFlight != null) return inFlight;
+    final Future<String?> work = _doResolveUpstreamTileUrl();
+    _resolvingUpstream = work;
+    try {
+      final String? result = await work;
+      if (result != null) _resolvedUpstreamTileUrl = result;
+      return result;
+    } finally {
+      _resolvingUpstream = null;
+    }
+  }
+
+  Future<String?> _doResolveUpstreamTileUrl() async {
+    try {
+      final http.Response r = await _upstream
+          .get(Uri.parse(_upstreamTileJsonUrl), headers: <String, String>{
+            'User-Agent': _upstreamUserAgent,
+          })
+          .timeout(_upstreamTimeout);
+      if (r.statusCode != 200) {
+        debugPrint(
+          'LocalTileServer: TileJSON $_upstreamTileJsonUrl returned ${r.statusCode}',
+        );
+        return null;
+      }
+      final dynamic decoded = jsonDecode(r.body);
+      if (decoded is! Map) return null;
+      final dynamic tilesField = decoded['tiles'];
+      if (tilesField is! List || tilesField.isEmpty) return null;
+      final dynamic first = tilesField.first;
+      if (first is! String) return null;
+      debugPrint('LocalTileServer: resolved upstream tiles → $first');
+      return first;
+    } catch (e) {
+      debugPrint('LocalTileServer: TileJSON resolve failed: $e');
       return null;
     }
   }
