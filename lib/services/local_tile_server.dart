@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
@@ -37,12 +38,29 @@ class LocalTileServer {
       'FalconView/1.0 (local tile proxy; contact: tarun@igismap.com)';
   static const Duration _upstreamTimeout = Duration(seconds: 10);
 
+  // LRU cap for proxied upstream tiles. ~500 tiles × ~50 KB avg ≈ 25 MB —
+  // enough to cover a few full pan/zoom cycles around any city without
+  // re-fetching, far below what we'd worry about on a desktop process.
+  static const int _upstreamCacheCapacity = 500;
+
   HttpServer? _server;
   final List<MbtilesTileSource> _sources = <MbtilesTileSource>[];
   final http.Client _upstream;
   final String _upstreamTileJsonUrl;
   String? _resolvedUpstreamTileUrl;
   Future<String?>? _resolvingUpstream;
+
+  // LRU cache of upstream tile responses (stored verbatim — usually gzipped —
+  // so we can re-emit them with the original Content-Encoding without
+  // re-compressing). Insertion order doubles as the eviction queue.
+  final LinkedHashMap<String, Uint8List> _upstreamCache =
+      LinkedHashMap<String, Uint8List>();
+
+  // Dedup map: when MapLibre fires several concurrent requests for the same
+  // tile during a pan/zoom, all callers await the same in-flight Future
+  // instead of each opening its own network round-trip.
+  final Map<String, Future<Uint8List?>> _upstreamInflight =
+      <String, Future<Uint8List?>>{};
 
   // Asset bytes are cached after first read so MapLibre's flood of requests
   // for each glyph range (one per font × one per Unicode block × per zoom)
@@ -189,6 +207,40 @@ class LocalTileServer {
   }
 
   Future<Uint8List?> _fetchUpstreamTile(int z, int x, int y) async {
+    final String key = '$z/$x/$y';
+
+    // Cache hit — bump to MRU and return immediately. This is what makes
+    // pan/zoom feel instant after the first visit to an area.
+    final Uint8List? cached = _upstreamCache.remove(key);
+    if (cached != null) {
+      _upstreamCache[key] = cached;
+      return cached;
+    }
+
+    // A concurrent caller is already fetching this tile — piggy-back on the
+    // same Future so MapLibre's burst of identical requests during a pan
+    // only triggers one network round-trip.
+    final Future<Uint8List?>? inFlight = _upstreamInflight[key];
+    if (inFlight != null) return inFlight;
+
+    final Future<Uint8List?> work = _doFetchUpstreamTile(z, x, y, key);
+    _upstreamInflight[key] = work;
+    try {
+      final Uint8List? bytes = await work;
+      if (bytes != null && bytes.isNotEmpty) {
+        _upstreamCache[key] = bytes;
+        while (_upstreamCache.length > _upstreamCacheCapacity) {
+          _upstreamCache.remove(_upstreamCache.keys.first);
+        }
+      }
+      return bytes;
+    } finally {
+      _upstreamInflight.remove(key);
+    }
+  }
+
+  Future<Uint8List?> _doFetchUpstreamTile(
+      int z, int x, int y, String key) async {
     final String? template = await _resolveUpstreamTileUrl();
     if (template == null) return null;
     final String url = template
@@ -199,6 +251,10 @@ class LocalTileServer {
       final http.Response r = await _upstream
           .get(Uri.parse(url), headers: <String, String>{
             'User-Agent': _upstreamUserAgent,
+            // Ask for the gzipped payload so we can serve it back verbatim
+            // to MapLibre with Content-Encoding: gzip (smaller cache, less
+            // bandwidth, no decompression cost on our side).
+            'Accept-Encoding': 'gzip',
           })
           .timeout(_upstreamTimeout);
       if (r.statusCode != 200) return null;
@@ -332,6 +388,8 @@ class LocalTileServer {
       await s.close();
     }
     _sources.clear();
+    _upstreamCache.clear();
+    _upstreamInflight.clear();
     _upstream.close();
   }
 }
