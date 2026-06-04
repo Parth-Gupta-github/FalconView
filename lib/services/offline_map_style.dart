@@ -1,5 +1,39 @@
 import 'dart:convert';
 
+/// Rewrites the full online style so its vector tiles come from the local
+/// [LocalTileServer] instead of the network, while keeping ALL of its layers,
+/// glyphs and sprite. The offline map then looks identical to the online one —
+/// same colours, place names and POI labels/icons — instead of the stripped
+/// geometry-only fallback below.
+///
+/// Glyphs/sprite still point at their original (OpenFreeMap) URLs; the webview
+/// HTTP cache serves them offline after they've been fetched once online, so
+/// labels keep working without bundling fonts.
+String buildOfflineStyleFromOnline(
+  String onlineStyleJson,
+  String tileUrlTemplate,
+) {
+  final Map<String, dynamic> style =
+      jsonDecode(onlineStyleJson) as Map<String, dynamic>;
+  final Map<String, dynamic>? sources =
+      (style['sources'] as Map?)?.cast<String, dynamic>();
+  if (sources != null) {
+    for (final MapEntry<String, dynamic> e in sources.entries) {
+      final Map<String, dynamic>? src = (e.value as Map?)?.cast<String, dynamic>();
+      if (src == null) continue;
+      if (src['type'] == 'vector') {
+        // Point this source at the local tile server; drop the TileJSON url so
+        // MapLibre doesn't try to fetch it over the network.
+        src['tiles'] = <String>[tileUrlTemplate];
+        src['minzoom'] = 0;
+        src['maxzoom'] = 14;
+        src.remove('url');
+      }
+    }
+  }
+  return jsonEncode(style);
+}
+
 /// Builds a self-contained MapLibre style that renders the OpenMapTiles schema
 /// from a local vector-tile URL (the [LocalTileServer]). It uses **no glyphs
 /// or sprite**, so it has zero network dependency — the trade-off is that text

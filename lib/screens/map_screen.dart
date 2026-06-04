@@ -146,12 +146,27 @@ class _MapScreenState extends State<MapScreen> {
       await _tileServer.start();
       final List<String> paths = await _offline.registeredMbtilesPaths();
       await _tileServer.setSources(paths);
+      String? offlineStyle;
+      if (paths.isNotEmpty) {
+        final String tpl = _tileServer.tileUrlTemplate;
+        // Prefer the FULL online style (all layers, labels, POIs) reading from
+        // local tiles, so offline looks identical to online. Fall back to the
+        // stripped geometry style only if the rich style isn't available yet.
+        String? full = _renderStyleJson;
+        if (full == null) {
+          try {
+            full = await TileConfig.forTier(subscriptionService.tier)
+                .loadRenderStyle();
+          } catch (_) {
+            full = null;
+          }
+        }
+        offlineStyle = full != null
+            ? buildOfflineStyleFromOnline(full, tpl)
+            : buildOfflineStyle(tpl);
+      }
       if (!mounted) return;
-      setState(() {
-        _offlineStyleJson = paths.isEmpty
-            ? null
-            : buildOfflineStyle(_tileServer.tileUrlTemplate);
-      });
+      setState(() => _offlineStyleJson = offlineStyle);
     } catch (e) {
       debugPrint('Offline map init failed: $e');
     }
@@ -1684,7 +1699,9 @@ class _MapScreenState extends State<MapScreen> {
           _buildTopRightStack(),
           Positioned(
             right: 16,
-            bottom: 96,
+            // Raised so the bottom-most FAB (GPS) clears the action bar, which
+            // grew taller after the build credit moved below it.
+            bottom: 140,
             child: SafeArea(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
