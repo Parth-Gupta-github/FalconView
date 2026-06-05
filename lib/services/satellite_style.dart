@@ -1,4 +1,4 @@
-// Esri World Imagery — free (no API key), high-resolution aerial/satellite
+﻿// Esri World Imagery — free (no API key), high-resolution aerial/satellite
 // tiles down to ~sub-meter, available to ~zoom 19, refreshed by Esri on a
 // rolling basis. The sharpest of the no-key sources, so it stays useful all
 // the way to street level.
