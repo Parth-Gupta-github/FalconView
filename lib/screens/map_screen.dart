@@ -163,7 +163,11 @@ class _MapScreenState extends State<MapScreen> {
         }
         offlineStyle = full != null
             ? buildOfflineStyleFromOnline(full, tpl)
-            : buildOfflineStyle(tpl);
+            : buildOfflineStyle(
+                tpl,
+                glyphsUrlTemplate: _tileServer.glyphsUrlTemplate,
+                spriteUrlBase: _tileServer.spriteUrlBase,
+              );
       }
       if (!mounted) return;
       setState(() => _offlineStyleJson = offlineStyle);
