@@ -552,12 +552,21 @@ class _MapScreenState extends State<MapScreen> {
     final bool compact = MediaQuery.of(context).size.width < 600;
     final double pad = compact ? 8 : 12;
     final double gap = compact ? 6 : 8;
+    // On mobile the search bar spans the full width, so a top-aligned chip
+    // column lands right on top of it — the PRO pill and zoom/toast chips
+    // crowd the search field. Drop the whole stack below the search bar there.
+    // Desktop/web cap the search bar and left-align it, leaving the right side
+    // free, so they keep the chips at the top. The offset mirrors the search
+    // Column above: 12 (top padding) + 52 (SearchCard height) + 8 (gap) = 72.
+    final bool isMobile = !kIsWeb && !_isDesktopMap;
+    const double searchBarBottom = 12 + 52 + 8;
+    final double topPad = isMobile ? searchBarBottom : pad;
     return Positioned(
       top: 0,
       right: 0,
       child: SafeArea(
         child: Padding(
-          padding: EdgeInsets.only(top: pad, right: pad, left: pad),
+          padding: EdgeInsets.only(top: topPad, right: pad, left: pad),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisSize: MainAxisSize.min,
