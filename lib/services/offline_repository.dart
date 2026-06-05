@@ -570,3 +570,5 @@ class OfflineRepository {
     }
   }
 }
+
+final OfflineRepository offlineRepository = OfflineRepository();
