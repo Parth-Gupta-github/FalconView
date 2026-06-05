@@ -84,7 +84,7 @@
         });
       });
 
-      // Force MapLibre to recalculate viewport after WebView layout settles.
+      // Force MapLibre to recalculate the full viewport after WebView layout settles.
       if (window.ResizeObserver) {
         new ResizeObserver(function () { map.resize(); })
             .observe(document.getElementById('map'));
