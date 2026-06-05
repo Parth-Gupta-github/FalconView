@@ -163,7 +163,11 @@ class _MapScreenState extends State<MapScreen> {
         }
         offlineStyle = full != null
             ? buildOfflineStyleFromOnline(full, tpl)
-            : buildOfflineStyle(tpl);
+            : buildOfflineStyle(
+                tpl,
+                glyphsUrlTemplate: _tileServer.glyphsUrlTemplate,
+                spriteUrlBase: _tileServer.spriteUrlBase,
+              );
       }
       if (!mounted) return;
       setState(() => _offlineStyleJson = offlineStyle);
@@ -542,12 +546,18 @@ class _MapScreenState extends State<MapScreen> {
   /// tier pill on top, then (when present) the zoom badge, status badge and the
   /// transient toast, each stacked directly below the previous.
   Widget _buildTopRightStack() {
+    // Narrow phones (the typical Android target) get tighter spacing so the
+    // status chips don't crowd the right side of the map. Desktop has plenty
+    // of room and uses the full sizes.
+    final bool compact = MediaQuery.of(context).size.width < 600;
+    final double pad = compact ? 8 : 12;
+    final double gap = compact ? 6 : 8;
     return Positioned(
       top: 0,
       right: 0,
       child: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.only(top: 12, right: 12, left: 12),
+          padding: EdgeInsets.only(top: pad, right: pad, left: pad),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisSize: MainAxisSize.min,
@@ -558,16 +568,20 @@ class _MapScreenState extends State<MapScreen> {
               // froze it on "UPGRADE" even after upgrading to Pro.
               _TierPill(),
               if (_zoomBadge != null) ...[
-                const SizedBox(height: 8),
-                _ZoomBadge(message: _zoomBadge!),
+                SizedBox(height: gap),
+                _ZoomBadge(message: _zoomBadge!, compact: compact),
               ],
               if (_statusMessage != null) ...[
-                const SizedBox(height: 8),
-                _StatusBadge(message: _statusMessage!),
+                SizedBox(height: gap),
+                _StatusBadge(message: _statusMessage!, compact: compact),
               ],
               if (_toastMessage != null) ...[
-                const SizedBox(height: 8),
-                _ToastBadge(message: _toastMessage!, error: _toastError),
+                SizedBox(height: gap),
+                _ToastBadge(
+                  message: _toastMessage!,
+                  error: _toastError,
+                  compact: compact,
+                ),
               ],
             ],
           ),
@@ -1671,7 +1685,12 @@ class _MapScreenState extends State<MapScreen> {
                   Align(
                     alignment: Alignment.centerLeft,
                     child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 260),
+                      // Narrower on phones so the coord chip doesn't visually
+                      // collide with the status badges in the top-right column.
+                      constraints: BoxConstraints(
+                        maxWidth:
+                            MediaQuery.of(context).size.width < 600 ? 200 : 260,
+                      ),
                       child: CoordCard(
                         coordsText: _formatCoords(_mapCenter),
                         distanceBearingText: _distanceBearingLine(),
@@ -1852,12 +1871,17 @@ class _TierPill extends StatelessWidget {
 
 class _StatusBadge extends StatelessWidget {
   final String message;
-  const _StatusBadge({required this.message});
+  final bool compact;
+  const _StatusBadge({required this.message, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
+    final double hPad = compact ? 10 : 12;
+    final double vPad = compact ? 6 : 8;
+    final double iconSize = compact ? 12 : 14;
+    final double fontSize = compact ? 11 : 12;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
       decoration: BoxDecoration(
         color: TacticalPalette.panel,
         borderRadius: BorderRadius.circular(10),
@@ -1873,13 +1897,14 @@ class _StatusBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.push_pin_outlined, size: 14, color: TacticalPalette.accent),
-          const SizedBox(width: 6),
+          Icon(Icons.push_pin_outlined,
+              size: iconSize, color: TacticalPalette.accent),
+          SizedBox(width: compact ? 5 : 6),
           Text(
             message,
-            style: const TextStyle(
+            style: TextStyle(
               color: TacticalPalette.textPrimary,
-              fontSize: 12,
+              fontSize: fontSize,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1895,12 +1920,17 @@ class _StatusBadge extends StatelessWidget {
 /// Compact, transient zoom readout pinned directly under the tier pill.
 class _ZoomBadge extends StatelessWidget {
   final String message;
-  const _ZoomBadge({required this.message});
+  final bool compact;
+  const _ZoomBadge({required this.message, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
+    final double hPad = compact ? 8 : 10;
+    final double vPad = compact ? 5 : 6;
+    final double iconSize = compact ? 12 : 14;
+    final double fontSize = compact ? 11 : 12;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
       decoration: BoxDecoration(
         color: TacticalPalette.panel,
         borderRadius: BorderRadius.circular(10),
@@ -1916,13 +1946,13 @@ class _ZoomBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.zoom_in, size: 14, color: TacticalPalette.accent),
-          const SizedBox(width: 6),
+          Icon(Icons.zoom_in, size: iconSize, color: TacticalPalette.accent),
+          SizedBox(width: compact ? 5 : 6),
           Text(
             message,
-            style: const TextStyle(
+            style: TextStyle(
               color: TacticalPalette.textPrimary,
-              fontSize: 12,
+              fontSize: fontSize,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1937,14 +1967,21 @@ class _ZoomBadge extends StatelessWidget {
 class _ToastBadge extends StatelessWidget {
   final String message;
   final bool error;
-  const _ToastBadge({required this.message, this.error = false});
+  final bool compact;
+  const _ToastBadge(
+      {required this.message, this.error = false, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
+    final double hPad = compact ? 10 : 14;
+    final double vPad = compact ? 7 : 10;
+    final double iconSize = compact ? 14 : 18;
+    final double fontSize = compact ? 12 : 13;
+    final double maxW = compact ? 220 : 280;
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 280),
+      constraints: BoxConstraints(maxWidth: maxW),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
         decoration: BoxDecoration(
           color: TacticalPalette.panel,
           borderRadius: BorderRadius.circular(12),
@@ -1964,16 +2001,16 @@ class _ToastBadge extends StatelessWidget {
           children: [
             Icon(
               error ? Icons.error_outline : Icons.info_outline,
-              size: 18,
+              size: iconSize,
               color: error ? TacticalPalette.error : TacticalPalette.accent,
             ),
-            const SizedBox(width: 8),
+            SizedBox(width: compact ? 6 : 8),
             Flexible(
               child: Text(
                 message,
-                style: const TextStyle(
+                style: TextStyle(
                   color: TacticalPalette.textPrimary,
-                  fontSize: 13,
+                  fontSize: fontSize,
                   fontWeight: FontWeight.w500,
                 ),
               ),

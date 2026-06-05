@@ -34,11 +34,13 @@
     .fv-dot.track-b  { background: #00C853; }
     .fv-dot.ruler    { width: 12px; height: 12px; background: #FF1744; box-shadow: none; }
     .fv-dot.area     { width: 10px; height: 10px; background: #1565C0; box-shadow: none; }
-    /* A teardrop pin for MARK. */
     .fv-pin {
-      width: 22px; height: 22px; background: #E53935;
-      border: 2px solid #fff; border-radius: 50% 50% 50% 0;
-      transform: rotate(-45deg); box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+      width: 38px; height: 38px;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23E53935'><path d='M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z'/></svg>");
+      background-size: contain;
+      background-repeat: no-repeat;
+      background-position: center;
+      filter: drop-shadow(0 2px 3px rgba(0,0,0,0.5));
     }
   </style>
 </head>
@@ -73,6 +75,19 @@
         zoom: 11,
         attributionControl: { compact: true }
       });
+
+      // Touchpad pinch-zoom feels glacial on Windows because MapLibre's default
+      // `zoomRate` (1/100) is tuned for the small ctrl+wheel deltas a trackpad
+      // emits per gesture frame. Boost it ~3x for trackpads and ~2x for mouse
+      // wheels — still natural, no overshoot, and a deliberate two-finger
+      // pinch now zooms a full level or so per gesture instead of nudging.
+      if (map.scrollZoom) {
+        map.scrollZoom.setZoomRate(1 / 35);     // touchpad pinch (ctrl+wheel)
+        map.scrollZoom.setWheelZoomRate(1 / 220); // mouse wheel
+      }
+      // Two-finger pan on touchpads. Off by default in MapLibre; enabling
+      // makes the WebView feel like the rest of Windows.
+      if (map.dragPan && map.dragPan.enable) map.dragPan.enable();
 
       map.on('load', function () { emit('ready'); });
       map.on('moveend', reportCamera);
