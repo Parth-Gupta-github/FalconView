@@ -52,9 +52,9 @@ class _LandingScreenState extends State<LandingScreen> {
   }
 
   void _openMap() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const MapScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const MapScreen()));
   }
 
   @override
@@ -64,9 +64,7 @@ class _LandingScreenState extends State<LandingScreen> {
       body: Stack(
         children: <Widget>[
           // Topographic contour texture behind everything.
-          const Positioned.fill(
-            child: CustomPaint(painter: _TopoPainter()),
-          ),
+          const Positioned.fill(child: CustomPaint(painter: _TopoPainter())),
           // Soft warm glow bleeding in from the top.
           Positioned.fill(
             child: DecoratedBox(
@@ -92,7 +90,9 @@ class _LandingScreenState extends State<LandingScreen> {
                     constraints: const BoxConstraints(maxWidth: 1120),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 28, vertical: 28),
+                        horizontal: 28,
+                        vertical: 28,
+                      ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: <Widget>[
@@ -217,16 +217,15 @@ class _Hero extends StatelessWidget {
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints c) {
         final bool wide = c.maxWidth >= 860;
-        final Widget text =
-            _HeroCopy(onLaunch: onLaunch, onGetApp: onGetApp, centered: !wide);
+        final Widget text = _HeroCopy(
+          onLaunch: onLaunch,
+          onGetApp: onGetApp,
+          centered: !wide,
+        );
         final Widget art = _HeroArt(big: wide);
         if (!wide) {
           return Column(
-            children: <Widget>[
-              art,
-              const SizedBox(height: 40),
-              text,
-            ],
+            children: <Widget>[art, const SizedBox(height: 40), text],
           );
         }
         return Row(
@@ -255,8 +254,9 @@ class _HeroCopy extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final CrossAxisAlignment cross =
-        centered ? CrossAxisAlignment.center : CrossAxisAlignment.start;
+    final CrossAxisAlignment cross = centered
+        ? CrossAxisAlignment.center
+        : CrossAxisAlignment.start;
     final TextAlign align = centered ? TextAlign.center : TextAlign.start;
     return Column(
       crossAxisAlignment: cross,
@@ -414,37 +414,43 @@ class _FeatureGrid extends StatelessWidget {
     _Feature(
       icon: Icons.wifi_off_rounded,
       title: 'Works offline',
-      body: 'A bundled vector basemap plus on-device search and routing keep '
+      body:
+          'A bundled vector basemap plus on-device search and routing keep '
           'you oriented with zero signal.',
     ),
     _Feature(
       icon: Icons.place_rounded,
       title: 'Field tools',
-      body: 'Mark waypoints, record a live track, measure distance with the '
+      body:
+          'Mark waypoints, record a live track, measure distance with the '
           'ruler, and outline an area — fast.',
     ),
     _Feature(
       icon: Icons.devices_rounded,
       title: 'Every platform',
-      body: 'One experience across Windows, macOS, Android, iOS and the web — '
+      body:
+          'One experience across Windows, macOS, Android, iOS and the web — '
           'rendered identically everywhere.',
     ),
     _Feature(
       icon: Icons.bolt_rounded,
       title: 'GPU-fast tiles',
-      body: 'Vector tiles drawn on the GPU mean buttery pan and zoom, whether '
+      body:
+          'Vector tiles drawn on the GPU mean buttery pan and zoom, whether '
           'you are online or fully offline.',
     ),
     _Feature(
       icon: Icons.search_rounded,
       title: 'Search & navigate',
-      body: 'Find any city, district or POI and route to it — with results '
+      body:
+          'Find any city, district or POI and route to it — with results '
           'served from your offline regions too.',
     ),
     _Feature(
       icon: Icons.satellite_alt_rounded,
       title: 'Satellite & terrain',
-      body: 'Switch the basemap to high-resolution satellite imagery whenever '
+      body:
+          'Switch the basemap to high-resolution satellite imagery whenever '
           'you need the real picture.',
     ),
   ];
@@ -508,11 +514,7 @@ class _FeatureCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             feature.body,
-            style: TextStyle(
-              color: _Brand.creamDim,
-              fontSize: 14,
-              height: 1.5,
-            ),
+            style: TextStyle(color: _Brand.creamDim, fontSize: 14, height: 1.5),
           ),
         ],
       ),
@@ -539,12 +541,38 @@ class _DownloadGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final List<_Download> items = <_Download>[
-      _Download('Windows', 'Desktop installer', Icons.desktop_windows_rounded,
-          windows),
-      _Download('macOS', 'Apple silicon & Intel', Icons.laptop_mac_rounded,
-          macos),
-      _Download('Android', 'APK / Play Store', Icons.android_rounded, android),
-      _Download('iOS', 'iPhone & iPad', Icons.phone_iphone_rounded, ios),
+      _Download(
+        label: 'Windows',
+        sublabel: 'Desktop installer',
+        requirement: 'Windows 10+',
+        size: '92 MB',
+        icon: Icons.desktop_windows_rounded,
+        url: windows,
+      ),
+      _Download(
+        label: 'macOS',
+        sublabel: 'Apple silicon & Intel',
+        requirement: 'macOS 11+',
+        size: '118 MB',
+        icon: Icons.laptop_mac_rounded,
+        url: macos,
+      ),
+      _Download(
+        label: 'Android',
+        sublabel: 'APK / Play Store',
+        requirement: 'Android 6+',
+        size: '74 MB',
+        icon: Icons.android_rounded,
+        url: android,
+      ),
+      _Download(
+        label: 'iOS',
+        sublabel: 'iPhone & iPad',
+        requirement: 'iOS 14+',
+        size: '86 MB',
+        icon: Icons.phone_iphone_rounded,
+        url: ios,
+      ),
     ];
     return Wrap(
       spacing: 16,
@@ -559,9 +587,19 @@ class _DownloadGrid extends StatelessWidget {
 }
 
 class _Download {
-  const _Download(this.label, this.sublabel, this.icon, this.url);
+  const _Download({
+    required this.label,
+    required this.sublabel,
+    required this.requirement,
+    required this.size,
+    required this.icon,
+    required this.url,
+  });
+
   final String label;
   final String sublabel;
+  final String requirement;
+  final String size;
   final IconData icon;
   final String url;
 }
@@ -635,8 +673,83 @@ class _DownloadCardState extends State<_DownloadCard> {
                   fontSize: 12.5,
                 ),
               ),
+              const SizedBox(height: 14),
+              Text(
+                widget.item.requirement,
+                style: TextStyle(
+                  color: _Brand.greenDark.withValues(alpha: 0.78),
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 130),
+                child: _hover
+                    ? Padding(
+                        key: const ValueKey<String>('size'),
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Row(
+                          children: <Widget>[
+                            const Icon(
+                              Icons.sd_card_rounded,
+                              color: _Brand.orange,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              widget.item.size,
+                              style: const TextStyle(
+                                color: _Brand.orange,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : const SizedBox(
+                        key: ValueKey<String>('empty'),
+                        height: 24,
+                      ),
+              ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Chip extends StatelessWidget {
+  const _Chip({required this.label, required this.icon});
+
+  final String label;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: _Brand.orange.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(100),
+        border: Border.all(color: _Brand.orange.withValues(alpha: 0.30)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(icon, color: _Brand.orangeBright, size: 14),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                color: _Brand.orangeBright,
+                fontSize: 11.5,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -695,8 +808,7 @@ class _PrimaryButton extends StatelessWidget {
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 18),
         textStyle: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         elevation: 0,
       ),
     );
@@ -725,8 +837,7 @@ class _GhostButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
         textStyle: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600),
         side: BorderSide(color: _Brand.cream.withValues(alpha: 0.30)),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
     );
   }
