@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../theme/tactical_theme.dart';
@@ -27,7 +29,37 @@ class ActionPanel extends StatefulWidget {
 class _ActionPanelState extends State<ActionPanel> {
   bool _collapsed = false;
 
+  // CLR confirmation gate. First tap arms it (label flips to "TAP AGAIN",
+  // background goes solid red); a second tap within [_clrConfirmWindow]
+  // actually invokes [widget.onClear]. The timer resets the gate on its own
+  // if the user wanders off, so an accidental first tap never silently
+  // primes a destructive second tap later.
+  static const Duration _clrConfirmWindow = Duration(seconds: 3);
+  bool _clrConfirming = false;
+  Timer? _clrConfirmTimer;
+
   void _toggle() => setState(() => _collapsed = !_collapsed);
+
+  void _handleClrTap() {
+    if (_clrConfirming) {
+      _clrConfirmTimer?.cancel();
+      _clrConfirmTimer = null;
+      setState(() => _clrConfirming = false);
+      widget.onClear();
+      return;
+    }
+    setState(() => _clrConfirming = true);
+    _clrConfirmTimer?.cancel();
+    _clrConfirmTimer = Timer(_clrConfirmWindow, () {
+      if (mounted) setState(() => _clrConfirming = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _clrConfirmTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -96,11 +128,14 @@ class _ActionPanelState extends State<ActionPanel> {
               ),
               _ActionButton(
                 icon: Icons.delete_sweep_outlined,
-                label: 'CLR',
-                tooltip: 'Clear all markers, rulers, routes, and areas',
+                label: _clrConfirming ? 'CONFIRM' : 'CLR',
+                tooltip: _clrConfirming
+                    ? 'Tap again to clear everything'
+                    : 'Clear all markers, rulers, routes, and areas',
                 active: false,
                 destructive: true,
-                onTap: widget.onClear,
+                confirming: _clrConfirming,
+                onTap: _handleClrTap,
               ),
             ],
           ),
@@ -201,6 +236,11 @@ class _ActionButton extends StatelessWidget {
   final String tooltip;
   final bool active;
   final bool destructive;
+  /// Emphatic "are you sure?" state for destructive actions. Inverts the
+  /// destructive colour pair (solid red bg, white fg) so the user sees the
+  /// button has *changed* and a second tap will commit. Animates so the
+  /// transition reads as a distinct event, not just a re-render.
+  final bool confirming;
   final VoidCallback onTap;
 
   const _ActionButton({
@@ -210,46 +250,65 @@ class _ActionButton extends StatelessWidget {
     required this.active,
     required this.onTap,
     this.destructive = false,
+    this.confirming = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final Color bg = active
-        ? TacticalPalette.accent
-        : (destructive ? TacticalPalette.panel : TacticalPalette.accentSoft);
-    final Color fg = active
-        ? Colors.white
-        : (destructive ? TacticalPalette.error : TacticalPalette.accent);
+    final Color bg;
+    final Color fg;
+    if (confirming) {
+      bg = TacticalPalette.error;
+      fg = Colors.white;
+    } else if (active) {
+      bg = TacticalPalette.accent;
+      fg = Colors.white;
+    } else if (destructive) {
+      bg = TacticalPalette.panel;
+      fg = TacticalPalette.error;
+    } else {
+      bg = TacticalPalette.accentSoft;
+      fg = TacticalPalette.accent;
+    }
     return Expanded(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 3),
         child: Tooltip(
           message: tooltip,
           waitDuration: const Duration(milliseconds: 400),
-          child: Material(
-            color: bg,
-            borderRadius: BorderRadius.circular(12),
-            child: InkWell(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            decoration: BoxDecoration(
+              color: bg,
               borderRadius: BorderRadius.circular(12),
-              onTap: onTap,
-              child: Container(
-                height: 52,
-                alignment: Alignment.center,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(icon, color: fg, size: 18),
-                    const SizedBox(height: 2),
-                    Text(
-                      label,
-                      style: TextStyle(
-                        color: fg,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        fontSize: 11,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: onTap,
+                child: Container(
+                  height: 52,
+                  alignment: Alignment.center,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(icon, color: fg, size: 18),
+                      const SizedBox(height: 2),
+                      AnimatedDefaultTextStyle(
+                        duration: const Duration(milliseconds: 180),
+                        style: TextStyle(
+                          color: fg,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: confirming ? 1.4 : 0.8,
+                          fontSize: confirming ? 10 : 11,
+                        ),
+                        child: Text(label),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

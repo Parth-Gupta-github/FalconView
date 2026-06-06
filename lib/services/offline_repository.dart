@@ -6,6 +6,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
 
 import '../models/app_tier.dart';
 import '../models/place.dart';
@@ -447,6 +448,61 @@ class OfflineRepository {
     // not MapLibre's store.
     out.addAll(await _loadMbtilesRegions());
     return out;
+  }
+
+  /// Best-effort storage metrics for the delete-confirmation dialog. Returns
+  /// total bytes the region occupies on disk (`.mbtiles` + index `.db`) and
+  /// the POI count in its index. Either value is null when the file is
+  /// missing or unreadable — the UI shows `—` for nulls. No exceptions
+  /// propagate; this is cheap and safe to call from a dialog `FutureBuilder`.
+  Future<({int? bytes, int? poiCount})> regionStorageInfo(int regionId) async {
+    if (kIsWeb) return (bytes: null, poiCount: null);
+    int? bytes;
+    try {
+      final Directory docs = await getApplicationDocumentsDirectory();
+      final List<String> candidates = <String>[
+        p.join(docs.path, 'region_mbtiles', '$regionId.mbtiles'),
+        p.join(docs.path, 'region_indexes', '$regionId.db'),
+      ];
+      int total = 0;
+      bool any = false;
+      for (final String path in candidates) {
+        final File f = File(path);
+        if (await f.exists()) {
+          total += await f.length();
+          any = true;
+        }
+      }
+      if (any) bytes = total;
+    } catch (_) {
+      // Leave bytes null.
+    }
+
+    int? poiCount;
+    try {
+      final Directory docs = await getApplicationDocumentsDirectory();
+      final String indexPath =
+          p.join(docs.path, 'region_indexes', '$regionId.db');
+      if (await File(indexPath).exists()) {
+        final Database db = await openDatabase(indexPath, readOnly: true);
+        try {
+          final List<Map<String, Object?>> rows =
+              await db.rawQuery('SELECT COUNT(*) AS n FROM features');
+          if (rows.isNotEmpty) {
+            final Object? n = rows.first['n'];
+            if (n is num) poiCount = n.toInt();
+          }
+        } catch (_) {
+          // Stale schema or no `features` table — leave poiCount null.
+        } finally {
+          await db.close();
+        }
+      }
+    } catch (_) {
+      // Leave poiCount null.
+    }
+
+    return (bytes: bytes, poiCount: poiCount);
   }
 
   Future<void> delete(int regionId) async {

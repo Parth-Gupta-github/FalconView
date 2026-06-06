@@ -677,29 +677,108 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _confirmDelete(Place place) async {
+    final int? id = place.regionId;
+    if (id == null) return;
+    // Start the metrics fetch immediately so the dialog can render them as
+    // soon as it opens (typical compute time ~50-150 ms for a 100 MB region).
+    final Future<({int? bytes, int? poiCount})> infoFuture =
+        _offline.regionStorageInfo(id);
     final bool? ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete offline region?'),
-        content: Text('Remove "${place.name}" from offline storage?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+      builder: (BuildContext ctx) => AlertDialog(
+        title: Text('Delete "${place.name}"?'),
+        content: FutureBuilder<({int? bytes, int? poiCount})>(
+          future: infoFuture,
+          builder: (BuildContext _,
+              AsyncSnapshot<({int? bytes, int? poiCount})> snap) {
+            final ({int? bytes, int? poiCount}) info =
+                snap.data ?? (bytes: null, poiCount: null);
+            final String size = _formatBytes(info.bytes);
+            final String pois = _formatCount(info.poiCount);
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'This will free $size on disk and remove '
+                  '$pois indexed POIs. The map tiles, road graph and POI '
+                  'index for this region will all be deleted.',
+                  style: const TextStyle(height: 1.4),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'You can re-download the region later if you change '
+                  'your mind.',
+                  style: TextStyle(
+                    color: Color(0xFF6B7280),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.red.shade600,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
     if (ok != true) return;
-    final int? id = place.regionId;
-    if (id == null) return;
     try {
       await _offline.delete(id);
       await _refreshDownloaded();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Deleted "${place.name}"'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Delete failed: $e')),
       );
     }
+  }
+
+  /// Human-readable byte size with one decimal place where useful.
+  /// Returns '—' when the value is unknown.
+  static String _formatBytes(int? bytes) {
+    if (bytes == null) return '—';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  /// "12,348" / "1.2k" / "—" depending on size. Conservative — uses commas
+  /// for anything below 100k so the dialog text reads naturally.
+  static String _formatCount(int? n) {
+    if (n == null) return '—';
+    if (n < 100000) {
+      final String s = n.toString();
+      final StringBuffer out = StringBuffer();
+      for (int i = 0; i < s.length; i++) {
+        if (i > 0 && (s.length - i) % 3 == 0) out.write(',');
+        out.write(s[i]);
+      }
+      return out.toString();
+    }
+    return '${(n / 1000).toStringAsFixed(1)}k';
   }
 
   /// Wraps a parsed coordinate as a Place so the existing pop-result flow
