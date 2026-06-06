@@ -1,0 +1,118 @@
+name: Build & Release
+
+# ---------------------------------------------------------------------------
+# Triggers:
+#   • Push a version tag (v1.2.3)  → build every platform, publish a Release.
+#   • Manual "Run workflow" button → build everything WITHOUT publishing
+#     (handy for verifying a build before you tag it).
+# ---------------------------------------------------------------------------
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+# The release job creates/updates a GitHub Release, which needs write access
+# to repository contents. GITHUB_TOKEN is provided automatically — no secrets.
+permissions:
+  contents: write
+
+env:
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  # ---- Android (APK) -------------------------------------------------------
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - name: Rename artifact
+        run: mv build/app/outputs/flutter-apk/app-release.apk FalconView-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: FalconView-android.apk
+
+  # ---- Windows (desktop zip) ----------------------------------------------
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+      - run: flutter config --enable-windows-desktop
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - name: Zip build
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath FalconView-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: FalconView-windows.zip
+
+  # ---- macOS (desktop zip, unsigned) --------------------------------------
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+      - run: flutter config --enable-macos-desktop
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - name: Zip .app bundle
+        run: |
+          APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
+          ditto -c -k --keepParent "$APP" FalconView-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: FalconView-macos.zip
+
+  # ---- Web (static bundle) -------------------------------------------------
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+      - run: flutter pub get
+      - run: flutter build web --release
+      - name: Zip build
+        run: cd build/web && zip -r ../../FalconView-web.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: FalconView-web.zip
+
+  # ---- Publish / update the GitHub Release ---------------------------------
+  # Runs only for tag pushes (skipped on the manual "build-only" trigger).
+  release:
+    needs: [android, windows, macos, web]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Auto-detects the pushed tag, creates the release if it doesn't
+          # exist, or updates it (replacing same-named assets) if it does.
+          files: artifacts/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
