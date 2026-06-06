@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -81,7 +80,7 @@ class _PaymentScreenState extends State<PaymentScreen>
           title: const Text('Complete purchase'),
           leading: const BackButton(),
         ),
-        body: _webWidthCap(child: Stack(
+        body: _widthCap(child: Stack(
           children: [
             ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
@@ -150,16 +149,24 @@ class _PaymentScreenState extends State<PaymentScreen>
     );
   }
 
-  /// On web, cap the body at 560 px and center it so we don't get a giant
-  /// edge-to-edge checkout sheet on desktop. No-op on mobile.
-  Widget _webWidthCap({required Widget child}) {
-    if (!kIsWeb) return child;
-    return Align(
-      alignment: Alignment.topCenter,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560),
-        child: child,
-      ),
+  /// Cap the checkout body width and center it on any wide surface — web,
+  /// Windows/macOS/Linux desktop, large tablets, resized windows — so the
+  /// checkout doesn't stretch edge-to-edge. Purely width-driven: on narrow
+  /// phones the available width is already below the cap, so it's a no-op.
+  static const double _maxContentWidth = 560;
+
+  Widget _widthCap({required Widget child}) {
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        if (constraints.maxWidth <= _maxContentWidth) return child;
+        return Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: _maxContentWidth),
+            child: child,
+          ),
+        );
+      },
     );
   }
 }
