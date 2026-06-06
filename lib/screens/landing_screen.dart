@@ -26,6 +26,8 @@ class _LandingScreenState extends State<LandingScreen> {
   // then they open the repository's Releases page, which is a sensible default.
   static const String _releasesUrl =
       'https://github.com/Parth-Gupta-github/FalconView/releases/latest';
+  static const String _githubUrl =
+      'https://github.com/Parth-Gupta-github/FalconView';
   static const String _androidUrl = _releasesUrl;
   static const String _windowsUrl = _releasesUrl;
   static const String _macosUrl = _releasesUrl;
@@ -107,6 +109,10 @@ class _LandingScreenState extends State<LandingScreen> {
                           const SizedBox(height: 28),
                           const _FeatureGrid(),
                           const SizedBox(height: 96),
+                          const _SectionLabel('SEE IT IN ACTION'),
+                          const SizedBox(height: 28),
+                          const _DemoCarousel(),
+                          const SizedBox(height: 96),
                           _SectionLabel('GET FALCONVIEW', key: _downloadKey),
                           const SizedBox(height: 10),
                           Text(
@@ -125,6 +131,11 @@ class _LandingScreenState extends State<LandingScreen> {
                             windows: _windowsUrl,
                             macos: _macosUrl,
                             ios: _iosUrl,
+                          ),
+                          const SizedBox(height: 22),
+                          _GithubCta(
+                            onStar: () => openExternal(_githubUrl),
+                            onDemo: _openMap,
                           ),
                           const SizedBox(height: 72),
                           const _Footer(),
@@ -757,6 +768,274 @@ class _Chip extends StatelessWidget {
 }
 
 // ===========================================================================
+// Product preview carousel.
+// ===========================================================================
+class _DemoCarousel extends StatefulWidget {
+  const _DemoCarousel();
+
+  @override
+  State<_DemoCarousel> createState() => _DemoCarouselState();
+}
+
+class _DemoCarouselState extends State<_DemoCarousel> {
+  int _index = 0;
+
+  static const List<_DemoSlide> _slides = <_DemoSlide>[
+    _DemoSlide(
+      icon: Icons.travel_explore_rounded,
+      title: 'Browse the world map',
+      body:
+          'Pan, zoom, switch layers and keep the basemap responsive on web or desktop.',
+    ),
+    _DemoSlide(
+      icon: Icons.edit_location_alt_rounded,
+      title: 'Mark and measure in the field',
+      body:
+          'Drop waypoints, draw routes, measure distance and outline areas without leaving the map.',
+    ),
+    _DemoSlide(
+      icon: Icons.cloud_download_rounded,
+      title: 'Take regions offline',
+      body:
+          'Pick a city or draw a polygon, then keep tiles, search and routing ready for no-signal work.',
+    ),
+  ];
+
+  void _move(int delta) {
+    setState(() => _index = (_index + delta) % _slides.length);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final _DemoSlide slide = _slides[_index];
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: _Brand.greenPanel.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _Brand.cream.withValues(alpha: 0.09)),
+      ),
+      child: LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints c) {
+          final bool wide = c.maxWidth >= 760;
+          final Widget preview = _DemoPreview(slide: slide);
+          final Widget copy = _DemoCopy(
+            slide: slide,
+            index: _index,
+            count: _slides.length,
+            onPrev: () => _move(-1),
+            onNext: () => _move(1),
+            onSelect: (int i) => setState(() => _index = i),
+          );
+          if (!wide) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[preview, const SizedBox(height: 18), copy],
+            );
+          }
+          return Row(
+            children: <Widget>[
+              Expanded(flex: 6, child: preview),
+              const SizedBox(width: 26),
+              Expanded(flex: 4, child: copy),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DemoSlide {
+  const _DemoSlide({
+    required this.icon,
+    required this.title,
+    required this.body,
+  });
+  final IconData icon;
+  final String title;
+  final String body;
+}
+
+class _DemoPreview extends StatelessWidget {
+  const _DemoPreview({required this.slide});
+
+  final _DemoSlide slide;
+
+  @override
+  Widget build(BuildContext context) {
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: Container(
+        decoration: BoxDecoration(
+          color: _Brand.greenDark,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _Brand.cream.withValues(alpha: 0.10)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: <Widget>[
+            const Positioned.fill(
+              child: CustomPaint(painter: _MiniMapPainter()),
+            ),
+            Positioned(
+              left: 22,
+              bottom: 22,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: _Brand.greenDeep.withValues(alpha: 0.84),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _Brand.cream.withValues(alpha: 0.12),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(slide.icon, color: _Brand.orangeBright, size: 22),
+                    const SizedBox(width: 10),
+                    Text(
+                      'FalconView live preview',
+                      style: TextStyle(
+                        color: _Brand.cream,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DemoCopy extends StatelessWidget {
+  const _DemoCopy({
+    required this.slide,
+    required this.index,
+    required this.count,
+    required this.onPrev,
+    required this.onNext,
+    required this.onSelect,
+  });
+
+  final _DemoSlide slide;
+  final int index;
+  final int count;
+  final VoidCallback onPrev;
+  final VoidCallback onNext;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _Chip(label: 'See it in action', icon: Icons.play_circle_fill_rounded),
+        const SizedBox(height: 18),
+        Text(
+          slide.title,
+          style: TextStyle(
+            color: _Brand.cream,
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.4,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          slide.body,
+          style: TextStyle(color: _Brand.creamDim, fontSize: 15, height: 1.55),
+        ),
+        const SizedBox(height: 24),
+        Row(
+          children: <Widget>[
+            _RoundIconButton(icon: Icons.chevron_left_rounded, onTap: onPrev),
+            const SizedBox(width: 10),
+            _RoundIconButton(icon: Icons.chevron_right_rounded, onTap: onNext),
+            const Spacer(),
+            for (int i = 0; i < count; i++)
+              Padding(
+                padding: const EdgeInsets.only(left: 7),
+                child: GestureDetector(
+                  onTap: () => onSelect(i),
+                  child: Container(
+                    width: i == index ? 22 : 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: i == index
+                          ? _Brand.orange
+                          : _Brand.cream.withValues(alpha: 0.28),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _GithubCta extends StatelessWidget {
+  const _GithubCta({required this.onStar, required this.onDemo});
+
+  final VoidCallback onStar;
+  final VoidCallback onDemo;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 14,
+      runSpacing: 12,
+      children: <Widget>[
+        _GhostButton(
+          label: 'Star on GitHub',
+          icon: Icons.star_rounded,
+          onTap: onStar,
+        ),
+        _PrimaryButton(
+          label: 'Try in browser',
+          icon: Icons.public_rounded,
+          onTap: onDemo,
+        ),
+      ],
+    );
+  }
+}
+
+class _RoundIconButton extends StatelessWidget {
+  const _RoundIconButton({required this.icon, required this.onTap});
+
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onTap,
+      icon: Icon(icon),
+      color: _Brand.cream,
+      style: IconButton.styleFrom(
+        backgroundColor: _Brand.cream.withValues(alpha: 0.10),
+        hoverColor: _Brand.orange.withValues(alpha: 0.24),
+      ),
+    );
+  }
+}
+
+// ===========================================================================
 // Shared bits.
 // ===========================================================================
 class _SectionLabel extends StatelessWidget {
@@ -883,6 +1162,73 @@ class _Footer extends StatelessWidget {
       ],
     );
   }
+}
+
+class _MiniMapPainter extends CustomPainter {
+  const _MiniMapPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Rect rect = Offset.zero & size;
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[Color(0xFF203529), Color(0xFF314D3A)],
+        ).createShader(rect),
+    );
+
+    final Paint grid = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _Brand.cream.withValues(alpha: 0.055);
+    for (double x = -size.width; x < size.width * 1.4; x += 46) {
+      canvas.drawLine(Offset(x, 0), Offset(x + size.height, size.height), grid);
+    }
+    for (double y = 20; y < size.height; y += 42) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y - 28), grid);
+    }
+
+    final Paint route = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round
+      ..color = _Brand.orangeBright;
+    final Path path = Path()
+      ..moveTo(size.width * 0.16, size.height * 0.70)
+      ..cubicTo(
+        size.width * 0.30,
+        size.height * 0.48,
+        size.width * 0.48,
+        size.height * 0.78,
+        size.width * 0.62,
+        size.height * 0.44,
+      )
+      ..cubicTo(
+        size.width * 0.70,
+        size.height * 0.24,
+        size.width * 0.82,
+        size.height * 0.34,
+        size.width * 0.88,
+        size.height * 0.20,
+      );
+    canvas.drawPath(path, route);
+
+    final Paint pin = Paint()..color = _Brand.cream;
+    for (final Offset p in <Offset>[
+      Offset(size.width * 0.16, size.height * 0.70),
+      Offset(size.width * 0.62, size.height * 0.44),
+      Offset(size.width * 0.88, size.height * 0.20),
+    ]) {
+      canvas.drawCircle(p, 9, Paint()..color = _Brand.orange);
+      canvas.drawCircle(p, 4, pin);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MiniMapPainter oldDelegate) => false;
 }
 
 // ===========================================================================
