@@ -34,17 +34,13 @@
     .fv-dot.track-b  { background: #00C853; }
     .fv-dot.ruler    { width: 12px; height: 12px; background: #FF1744; box-shadow: none; }
     .fv-dot.area     { width: 10px; height: 10px; background: #1565C0; box-shadow: none; }
-    /* MARK pin. Matches the web/mobile path which renders Flutter's
-       Icons.location_on (Material Design teardrop) at red #E53935. We bake
-       the same SVG inline so the desktop WebView, the Flutter Web canvas,
-       and the native mobile symbol layer all show an identical marker. */
     .fv-pin {
-      width: 30px; height: 30px;
+      width: 38px; height: 38px;
       background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23E53935'><path d='M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z'/></svg>");
       background-size: contain;
       background-repeat: no-repeat;
       background-position: center;
-      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45));
+      filter: drop-shadow(0 2px 3px rgba(0,0,0,0.5));
     }
   </style>
 </head>
@@ -61,46 +57,6 @@
         window.flutter_inappwebview.callHandler('fvEvent', payload);
       }
     }
-
-    // Suppress MapLibre's pan-cancellation noise before it crosses the Dart
-    // bridge. The original console.error still runs for browser devtools.
-    function isFetchAbortNoise(message) {
-      if (typeof message !== 'string') return false;
-      return message === 'Failed to fetch' ||
-             message.indexOf('Failed to fetch') >= 0 ||
-             message.indexOf('AbortError') >= 0 ||
-             message.indexOf('The operation was aborted') >= 0;
-    }
-    (function () {
-      var orig = console.error.bind(console);
-      console.error = function () {
-        try {
-          var parts = [];
-          var anyRealError = false;
-          for (var i = 0; i < arguments.length; i++) {
-            var a = arguments[i];
-            if (a instanceof Error) {
-              var em = a.message || a.name || 'Error';
-              if (isFetchAbortNoise(em)) continue;
-              parts.push(em + (a.stack ? '\n' + a.stack : ''));
-              anyRealError = true;
-            } else if (typeof a === 'string') {
-              if (isFetchAbortNoise(a)) continue;
-              parts.push(a);
-              anyRealError = true;
-            } else {
-              try { parts.push(JSON.stringify(a)); }
-              catch (_) { parts.push(String(a)); }
-              anyRealError = true;
-            }
-          }
-          if (anyRealError && parts.length > 0) {
-            emit('error', { message: parts.join(' | '), cmd: 'console.error' });
-          }
-        } catch (_) {}
-        return orig.apply(console, arguments);
-      };
-    })();
 
     var map = null;
     var markers = {};   // id -> maplibre.Marker
@@ -194,7 +150,20 @@
         case 'removeLayer':    return removeRaster(msg.id);
         case 'clearOverlays':  return clearOverlays();
         case 'setInteraction': return setInteraction(msg);
+        case 'zoomBy':         return zoomBy(msg);
       }
+    }
+
+    // Smooth step-zoom triggered by the on-screen + / – buttons. Uses
+    // MapLibre's easeTo so pinch / wheel and button input feel the same;
+    // amount defaults to 1 zoom level. MapLibre clamps to the source's
+    // min/maxzoom automatically — no need to guard here.
+    function zoomBy(m) {
+      var amount = (typeof m.amount === 'number') ? m.amount : 1;
+      map.easeTo({
+        zoom: map.getZoom() + amount,
+        duration: m.duration != null ? m.duration : 220
+      });
     }
 
     function setStyle(style, diff) {

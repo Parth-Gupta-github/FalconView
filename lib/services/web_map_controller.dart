@@ -27,7 +27,7 @@ class WebMapController {
 
   /// Fired (throttled) as the camera moves and once when it settles.
   void Function(double lat, double lng, double zoom, double bearing)?
-      onCameraChanged;
+  onCameraChanged;
 
   bool _ready = false;
   bool get isReady => _ready;
@@ -44,7 +44,11 @@ class WebMapController {
         break;
       case 'camera':
         onCameraChanged?.call(
-          _d(e['lat']), _d(e['lng']), _d(e['zoom']), _d(e['bearing']));
+          _d(e['lat']),
+          _d(e['lng']),
+          _d(e['zoom']),
+          _d(e['bearing']),
+        );
         break;
       // 'error' is intentionally swallowed here; the view logs it.
     }
@@ -60,8 +64,9 @@ class WebMapController {
   /// Replaces the whole map style. [styleJson] is a MapLibre style document
   /// (the same string the native `MapLibreMap.styleString` consumes). Pass
   /// [diff] false to force a full reload when sources change wholesale.
-  Future<void> setStyle(String styleJson, {bool diff = false}) =>
-      _send(<String, Object?>{'cmd': 'setStyle', 'style': styleJson, 'diff': diff});
+  Future<void> setStyle(String styleJson, {bool diff = false}) => _send(
+    <String, Object?>{'cmd': 'setStyle', 'style': styleJson, 'diff': diff},
+  );
 
   Future<void> flyTo({
     double? lat,
@@ -70,16 +75,15 @@ class WebMapController {
     double? bearing,
     double? pitch,
     int durationMs = 600,
-  }) =>
-      _send(<String, Object?>{
-        'cmd': 'flyTo',
-        'lat': lat,
-        'lng': lng,
-        'zoom': zoom,
-        'bearing': bearing,
-        'pitch': pitch,
-        'duration': durationMs,
-      });
+  }) => _send(<String, Object?>{
+    'cmd': 'flyTo',
+    'lat': lat,
+    'lng': lng,
+    'zoom': zoom,
+    'bearing': bearing,
+    'pitch': pitch,
+    'duration': durationMs,
+  });
 
   Future<void> fitBounds({
     required double west,
@@ -88,26 +92,33 @@ class WebMapController {
     required double north,
     double padding = 60,
     int durationMs = 600,
-  }) =>
-      _send(<String, Object?>{
-        'cmd': 'fitBounds',
-        'west': west,
-        'south': south,
-        'east': east,
-        'north': north,
-        'padding': padding,
-        'duration': durationMs,
-      });
+  }) => _send(<String, Object?>{
+    'cmd': 'fitBounds',
+    'west': west,
+    'south': south,
+    'east': east,
+    'north': north,
+    'padding': padding,
+    'duration': durationMs,
+  });
 
   // --- markers ---------------------------------------------------------------
 
   /// Adds or moves a DOM marker. [kind] selects styling and maps to CSS classes
   /// in the host page: `gps`, `place`, `pin` (MARK), `track-a`, `track-b`,
   /// `ruler`, `area`.
-  Future<void> setMarker(String id, double lat, double lng, {String kind = 'gps'}) =>
-      _send(<String, Object?>{
-        'cmd': 'setMarker', 'id': id, 'lat': lat, 'lng': lng, 'kind': kind,
-      });
+  Future<void> setMarker(
+    String id,
+    double lat,
+    double lng, {
+    String kind = 'gps',
+  }) => _send(<String, Object?>{
+    'cmd': 'setMarker',
+    'id': id,
+    'lat': lat,
+    'lng': lng,
+    'kind': kind,
+  });
 
   Future<void> removeMarker(String id) =>
       _send(<String, Object?>{'cmd': 'removeMarker', 'id': id});
@@ -115,11 +126,16 @@ class WebMapController {
   // --- lines & polygons ------------------------------------------------------
 
   /// Adds or updates a GeoJSON overlay. [style] is `track`, `ruler`, or `area`.
-  Future<void> setGeoJson(String id, Map<String, dynamic> data,
-          {String style = 'track'}) =>
-      _send(<String, Object?>{
-        'cmd': 'setGeoJson', 'id': id, 'data': data, 'style': style,
-      });
+  Future<void> setGeoJson(
+    String id,
+    Map<String, dynamic> data, {
+    String style = 'track',
+  }) => _send(<String, Object?>{
+    'cmd': 'setGeoJson',
+    'id': id,
+    'data': data,
+    'style': style,
+  });
 
   Future<void> removeGeoJson(String id) =>
       _send(<String, Object?>{'cmd': 'removeGeoJson', 'id': id});
@@ -132,15 +148,14 @@ class WebMapController {
     int tileSize = 256,
     double maxzoom = 19,
     String attribution = '',
-  }) =>
-      _send(<String, Object?>{
-        'cmd': 'addRaster',
-        'id': id,
-        'tiles': tiles,
-        'tileSize': tileSize,
-        'maxzoom': maxzoom,
-        'attribution': attribution,
-      });
+  }) => _send(<String, Object?>{
+    'cmd': 'addRaster',
+    'id': id,
+    'tiles': tiles,
+    'tileSize': tileSize,
+    'maxzoom': maxzoom,
+    'attribution': attribution,
+  });
 
   Future<void> removeLayer(String id) =>
       _send(<String, Object?>{'cmd': 'removeLayer', 'id': id});
@@ -152,5 +167,18 @@ class WebMapController {
 
   /// Toggles rotate/pitch gestures (north-up lock).
   Future<void> setInteraction({required bool rotate, required bool pitch}) =>
-      _send(<String, Object?>{'cmd': 'setInteraction', 'rotate': rotate, 'pitch': pitch});
+      _send(<String, Object?>{
+        'cmd': 'setInteraction',
+        'rotate': rotate,
+        'pitch': pitch,
+      });
+
+  /// Step-zooms by [amount] zoom levels (positive = in, negative = out).
+  /// Animated via easeTo so it feels the same as pinch / wheel input.
+  Future<void> zoomBy(double amount, {int durationMs = 220}) =>
+      _send(<String, Object?>{
+        'cmd': 'zoomBy',
+        'amount': amount,
+        'duration': durationMs,
+      });
 }

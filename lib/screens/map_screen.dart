@@ -881,6 +881,22 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  /// Steps the camera one zoom level in (positive [delta]) or out (negative).
+  /// Routes through the WebView controller on desktop / web and through
+  /// MapLibre Native on Android / iOS — both clamp to the source min/max
+  /// zoom so calling this at the bounds is a safe no-op.
+  Future<void> _zoomBy(double delta) async {
+    if (_webController != null) {
+      await _webController!.zoomBy(delta);
+      return;
+    }
+    final MapLibreMapController? c = _controller;
+    if (c == null) return;
+    await c.animateCamera(
+      delta > 0 ? CameraUpdate.zoomIn() : CameraUpdate.zoomOut(),
+    );
+  }
+
   Future<void> _onRecenter() async {
     try {
       final Position pos = await _locationService.currentPosition();
@@ -1834,14 +1850,6 @@ class _MapScreenState extends State<MapScreen> {
           // All status chips/toasts in one vertical stack hugging the top-right
           // corner: tier pill, then zoom badge, status badge and toast below it.
           _buildTopRightStack(),
-          // Bottom-left credit. Sits underneath the action panel so it only
-          // peeks out when the panel is collapsed; the panel covers it cleanly
-          // when expanded.
-          const Positioned(
-            left: 12,
-            bottom: 10,
-            child: SafeArea(top: false, child: _BuiltByFooter()),
-          ),
           Positioned(
             right: 16,
             // Raised so the bottom-most FAB (GPS) clears the action bar, which
@@ -1851,6 +1859,14 @@ class _MapScreenState extends State<MapScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // Compact + / − pill so pinch-zoom stutters (slow touchpad,
+                  // intermittent WebView gesture handling) always have a
+                  // reliable fallback. Same animated step on every platform.
+                  _ZoomControls(
+                    onZoomIn: () => unawaited(_zoomBy(1)),
+                    onZoomOut: () => unawaited(_zoomBy(-1)),
+                  ),
+                  const SizedBox(height: 10),
                   CompassFab(
                     bearing: _bearing,
                     locked: _rotationLocked,
@@ -1941,27 +1957,75 @@ class _MapScreenState extends State<MapScreen> {
   }
 }
 
-/// Tiny credit chip pinned to the map's bottom-left corner. Stays out of
-/// the way of the action panel: when the panel is expanded it covers this;
-/// when collapsed, the footer is visible.
-class _BuiltByFooter extends StatelessWidget {
-  const _BuiltByFooter();
+/// Stacked `+` and `−` map zoom controls, rendered as a single rounded pill
+/// so they read as one widget. Placed at the top of the right-side FAB column
+/// so they're always reachable regardless of platform — useful when touchpad
+/// pinch / scroll-wheel zoom feels stuck or unresponsive.
+class _ZoomControls extends StatelessWidget {
+  const _ZoomControls({required this.onZoomIn, required this.onZoomOut});
+
+  final VoidCallback onZoomIn;
+  final VoidCallback onZoomOut;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: TacticalPalette.panelTranslucent,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: TacticalPalette.divider),
+    return Material(
+      elevation: 4,
+      color: TacticalPalette.panel,
+      borderRadius: BorderRadius.circular(14),
+      child: SizedBox(
+        width: 44,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            _ZoomButton(
+              icon: Icons.add,
+              tooltip: 'Zoom in',
+              onTap: onZoomIn,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(14),
+              ),
+            ),
+            const Divider(height: 1, thickness: 1),
+            _ZoomButton(
+              icon: Icons.remove,
+              tooltip: 'Zoom out',
+              onTap: onZoomOut,
+              borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(14),
+              ),
+            ),
+          ],
+        ),
       ),
-      child: const Text(
-        'Built by Parv Tiwari & Parth Gupta',
-        style: TextStyle(
-          fontSize: 10,
-          color: TacticalPalette.textDim,
-          height: 1.2,
+    );
+  }
+}
+
+class _ZoomButton extends StatelessWidget {
+  const _ZoomButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    required this.borderRadius,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  final BorderRadius borderRadius;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 400),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: borderRadius,
+        child: SizedBox(
+          height: 44,
+          child: Icon(icon, size: 22, color: TacticalPalette.textPrimary),
         ),
       ),
     );
