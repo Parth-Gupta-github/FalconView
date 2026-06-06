@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'screens/landing_screen.dart';
 import 'screens/map_screen.dart';
 import 'services/subscription_service.dart';
 import 'theme/tactical_theme.dart';
@@ -78,7 +79,10 @@ class FalconViewApp extends StatelessWidget {
       title: 'FalconView',
       debugShowCheckedModeBanner: false,
       theme: buildFalconViewTheme(),
-      home: const MapScreen(),
+      // Web visitors land on the download/intro page first and tap through to
+      // the in-browser map. Native builds (mobile/desktop) open the map
+      // directly — there's nothing to download there.
+      home: kIsWeb ? const LandingScreen() : const MapScreen(),
     );
   }
 }

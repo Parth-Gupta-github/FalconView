@@ -94,6 +94,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/icon/
     - assets/styles/
     - assets/web_map/
     - assets/web_map/vendor/
