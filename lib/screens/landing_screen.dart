@@ -28,6 +28,8 @@ class _LandingScreenState extends State<LandingScreen> {
       'https://github.com/Parth-Gupta-github/FalconView/releases/latest';
   static const String _githubUrl =
       'https://github.com/Parth-Gupta-github/FalconView';
+  static const String _pressKitUrl =
+      'https://github.com/Parth-Gupta-github/FalconView/tree/main/assets';
   static const String _androidUrl = _releasesUrl;
   static const String _windowsUrl = _releasesUrl;
   static const String _macosUrl = _releasesUrl;
@@ -137,6 +139,12 @@ class _LandingScreenState extends State<LandingScreen> {
                             onStar: () => openExternal(_githubUrl),
                             onDemo: _openMap,
                           ),
+                          const SizedBox(height: 72),
+                          const _WhatsNew(),
+                          const SizedBox(height: 72),
+                          const _FaqSection(),
+                          const SizedBox(height: 72),
+                          const _PressKit(url: _pressKitUrl),
                           const SizedBox(height: 72),
                           const _Footer(),
                           const SizedBox(height: 24),
@@ -1011,6 +1019,236 @@ class _GithubCta extends StatelessWidget {
           onTap: onDemo,
         ),
       ],
+    );
+  }
+}
+
+class _WhatsNew extends StatelessWidget {
+  const _WhatsNew();
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionPanel(
+      label: "WHAT'S NEW IN 1.0",
+      child: _DarkExpansionTile(
+        title: "What's new in 1.0",
+        subtitle: 'A quick mini changelog for the first public build.',
+        children: const <Widget>[
+          _Bullet('Offline vector basemap bundled for first-run use.'),
+          _Bullet('Waypoint, track, distance and area tools on one map.'),
+          _Bullet('Search, routing, satellite view and Pro offline regions.'),
+        ],
+      ),
+    );
+  }
+}
+
+class _FaqSection extends StatelessWidget {
+  const _FaqSection();
+
+  static const List<_Faq> _items = <_Faq>[
+    _Faq(
+      'Is it free?',
+      'Yes. FalconView has a free tier for core mapping tools, with Pro reserved for heavier offline workflows.',
+    ),
+    _Faq(
+      'Do you collect data?',
+      'FalconView is designed to work locally first. The app does not need personal data for offline map use.',
+    ),
+    _Faq(
+      'Why unsigned?',
+      'Early macOS and iOS builds may not be notarized or signed yet, so Apple can show a security warning before launch.',
+    ),
+    _Faq(
+      'What is the difference between Pro and Free?',
+      'Free covers the everyday map experience. Pro unlocks advanced offline region downloads and related field features.',
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionPanel(
+      label: 'FAQ',
+      child: Column(
+        children: <Widget>[
+          for (final _Faq item in _items)
+            _DarkExpansionTile(
+              title: item.question,
+              children: <Widget>[_Answer(item.answer)],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Faq {
+  const _Faq(this.question, this.answer);
+  final String question;
+  final String answer;
+}
+
+class _PressKit extends StatelessWidget {
+  const _PressKit({required this.url});
+
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionPanel(
+      label: 'PRESS KIT',
+      child: Container(
+        padding: const EdgeInsets.all(22),
+        decoration: BoxDecoration(
+          color: _Brand.greenPanel.withValues(alpha: 0.62),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: _Brand.cream.withValues(alpha: 0.09)),
+        ),
+        child: Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 18,
+          runSpacing: 18,
+          children: <Widget>[
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 620),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    'Brand assets for future coverage',
+                    style: TextStyle(
+                      color: _Brand.cream,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'App icon, screenshots, attribution notes and release links in one place.',
+                    style: TextStyle(color: _Brand.creamDim, fontSize: 14.5),
+                  ),
+                ],
+              ),
+            ),
+            _GhostButton(
+              label: 'Open press kit',
+              icon: Icons.folder_open_rounded,
+              onTap: () => openExternal(url),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionPanel extends StatelessWidget {
+  const _SectionPanel({required this.label, required this.child});
+
+  final String label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _SectionLabel(label),
+        const SizedBox(height: 24),
+        child,
+      ],
+    );
+  }
+}
+
+class _DarkExpansionTile extends StatelessWidget {
+  const _DarkExpansionTile({
+    required this.title,
+    required this.children,
+    this.subtitle,
+  });
+
+  final String title;
+  final List<Widget> children;
+  final String? subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        collapsedIconColor: _Brand.creamDim,
+        iconColor: _Brand.orangeBright,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+        childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
+        title: Text(
+          title,
+          style: TextStyle(
+            color: _Brand.cream,
+            fontSize: 17,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        subtitle: subtitle == null
+            ? null
+            : Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  subtitle!,
+                  style: TextStyle(color: _Brand.creamDim, fontSize: 13.5),
+                ),
+              ),
+        children: children,
+      ),
+    );
+  }
+}
+
+class _Answer extends StatelessWidget {
+  const _Answer(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: TextStyle(color: _Brand.creamDim, fontSize: 14, height: 1.5),
+    );
+  }
+}
+
+class _Bullet extends StatelessWidget {
+  const _Bullet(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Icon(
+            Icons.check_circle_rounded,
+            color: _Brand.orange,
+            size: 18,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: _Brand.creamDim,
+                fontSize: 14,
+                height: 1.45,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
