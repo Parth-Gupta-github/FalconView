@@ -1907,12 +1907,18 @@ class _MapScreenState extends State<MapScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  KeyedSubtree(
-                    key: _actionPanelKey,
-                    child: ActionPanel(
-                      mode: _mode,
-                      onModeToggled: _onModeToggled,
-                      onClear: _onClear,
+                  ConstrainedBox(
+                    // Cap the action bar so it doesn't stretch edge-to-edge on
+                    // desktop/web. On phones the screen is narrower than the
+                    // cap, so it stays full width.
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: KeyedSubtree(
+                      key: _actionPanelKey,
+                      child: ActionPanel(
+                        mode: _mode,
+                        onModeToggled: _onModeToggled,
+                        onClear: _onClear,
+                      ),
                     ),
                   ),
                   // Always-visible build credit, bottom-most left below the panel.
