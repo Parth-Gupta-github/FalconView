@@ -64,6 +64,29 @@
       background: rgba(255, 255, 255, 0.7) !important;
     }
   </style>
+
+  <!-- Pin the map attribution to a compact "(i)" button on web, so it matches
+       the native (Android/iOS) builds and the desktop WebView, which already
+       show a compact attribution. MapLibre's web default is responsive
+       (a small "(i)" on narrow screens, but expanded text on wide ones); we
+       keep it compact everywhere, so the credits always sit behind one "(i)"
+       that opens on click. MapLibre's own button + click handler do the
+       toggling — we just keep the `maplibregl-compact` class applied. -->
+  <script>
+    (function () {
+      function pinCompact() {
+        document
+          .querySelectorAll('.maplibregl-ctrl-attrib:not(.maplibregl-compact)')
+          .forEach(function (el) { el.classList.add('maplibregl-compact'); });
+      }
+      // Re-apply whenever the control is (re)created or MapLibre flips it back
+      // to expanded on a resize. The :not() guard makes this loop-safe.
+      new MutationObserver(pinCompact).observe(document.documentElement, {
+        childList: true, subtree: true, attributes: true, attributeFilter: ['class'],
+      });
+      window.addEventListener('resize', pinCompact);
+    })();
+  </script>
 </head>
 <body>
   <!--
